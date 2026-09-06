@@ -20,6 +20,7 @@ namespace {
 
 constexpr const char* kLayoutCVar = "gSoh3dsControls.Layout";
 constexpr const char* kMappingPrefix = "gSoh3dsControls.Mapping.";
+constexpr const char* kFreeLookEnabled = "gSettings.FreeLook.Enabled";
 constexpr const char* kSensitivityX = "gSettings.FreeLook.CameraSensitivity.X";
 constexpr const char* kSensitivityY = "gSettings.FreeLook.CameraSensitivity.Y";
 constexpr const char* kAimSensitivityX = "gSettings.FirstPersonCameraSensitivity.X";
@@ -39,6 +40,7 @@ enum Row {
     ROW_BUTTON_FIRST,
     ROW_BUTTON_LAST = ROW_BUTTON_FIRST + 13,
     ROW_CAMERA_HEADING,
+    ROW_CAMERA_ENABLED,
     ROW_DEADZONE,
     ROW_SENSITIVITY_X,
     ROW_SENSITIVITY_Y,
@@ -151,7 +153,7 @@ void CaptureLayout(int layout) {
 }
 
 void SetManagedCameraDefaults() {
-    CVarSetInteger("gSettings.FreeLook.Enabled", 1);
+    CVarSetInteger(kFreeLookEnabled, 1);
     CVarSetInteger("gSettings.Controls.RightStickAim", 1);
     CVarSetInteger("gSettings.FirstPersonCameraSensitivity.Enabled", 1);
 }
@@ -214,6 +216,10 @@ extern "C" int Soh3dsControls_Row(int row, Soh3dsSettingsRow* out) {
                    "Changing one button captures the current layout and preserves every other button");
     } else if (row == ROW_CAMERA_HEADING) {
         SetTextRow(out, row, "C-stick camera", "", SOH3DS_ROW_HEADING);
+    } else if (row == ROW_CAMERA_ENABLED) {
+        SetTextRow(out, row, "Enable C-stick camera", "", SOH3DS_ROW_TOGGLE,
+                   "Use the New 3DS C-stick to look around during gameplay");
+        out->on = CVarGetInteger(kFreeLookEnabled, 0) != 0;
     } else if (row == ROW_DEADZONE) {
         char value[24];
         std::snprintf(value, sizeof(value), "%d%%", Soh3dsControls_GetCStickDeadzone());
@@ -274,6 +280,8 @@ extern "C" void Soh3dsControls_Adjust(int row, int dir) {
         CVarSetInteger(kLayoutCVar, LAYOUT_CUSTOM);
         SetManagedCameraDefaults();
         sWaitForRelease = true;
+    } else if (row == ROW_CAMERA_ENABLED) {
+        CVarSetInteger(kFreeLookEnabled, CVarGetInteger(kFreeLookEnabled, 0) ? 0 : 1);
     } else if (row == ROW_DEADZONE) {
         const int old = Soh3dsControls_GetCStickDeadzone();
         const int next = old + (dir > 0 ? 5 : -5);
@@ -285,7 +293,6 @@ extern "C" void Soh3dsControls_Adjust(int row, int dir) {
         const float next = Clamp(CVarGetFloat(freeLook, 1.0f) + (dir > 0 ? 0.1f : -0.1f), 0.5f, 2.0f);
         CVarSetFloat(freeLook, next);
         CVarSetFloat(aiming, next);
-        SetManagedCameraDefaults();
     } else if (row == ROW_INVERT_X || row == ROW_INVERT_Y) {
         const bool x = row == ROW_INVERT_X;
         const char* freeLook = x ? kInvertX : kInvertY;

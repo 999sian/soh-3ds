@@ -128,6 +128,29 @@ int main() {
     Soh3dsControls_TransformPad(SOH3DS_PHYS_A | SOH3DS_PHYS_L | SOH3DS_PHYS_DUP, &buttons);
     assert(buttons == (BTN_B | BTN_Z | BTN_CUP));
 
+    // An existing profile can have free-look disabled after its one-time
+    // controller setup. The native page must expose a persistent recovery
+    // toggle without changing the user's button layout.
+    ints["gSettings.FreeLook.Enabled"] = 0;
+    ints["gSoh3dsInputLayout"] = 1;
+    const int cameraRow = FindRow("Enable C-stick camera");
+    Soh3dsSettingsRow camera{};
+    assert(Soh3dsControls_Row(cameraRow, &camera));
+    assert(camera.kind == SOH3DS_ROW_TOGGLE && !camera.on);
+    const auto mappingsBeforeCamera = currentMappings[0];
+    const int savesBeforeCamera = saves;
+    Soh3dsControls_Adjust(cameraRow, +1);
+    assert(Soh3dsControls_Row(cameraRow, &camera) && camera.on);
+    assert(ints["gSettings.FreeLook.Enabled"] == 1);
+    assert(saves == savesBeforeCamera + 1);
+    assert(Value("Layout") == "Custom");
+    assert(currentMappings[0] == mappingsBeforeCamera);
+    Soh3dsControls_Adjust(cameraRow, -1);
+    assert(Soh3dsControls_Row(cameraRow, &camera) && !camera.on);
+    assert(saves == savesBeforeCamera + 2);
+    Soh3dsControls_Adjust(FindRow("Camera X sensitivity"), +1);
+    assert(ints["gSettings.FreeLook.Enabled"] == 0);
+
     // Sliders clamp at their supported boundaries and write through the real
     // engine-facing deadzone/camera configuration boundaries.
     const int dzRow = FindRow("C-stick deadzone");
