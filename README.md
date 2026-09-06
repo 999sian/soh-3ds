@@ -17,6 +17,19 @@ are not included in this repository. The first-run setup looks for an uncompress
 the packaged ROM manifest, and generates the game archive on the console.
 Setup requires a build packaged with the support archive and Torch metadata.
 
+**On-device extraction can take a long time.** Keep the console connected to
+power and let setup finish without closing the app or removing the SD card.
+
+To avoid extracting on the console, use desktop Ship of Harkinian (SoH) with
+your supported ROM to generate the game archive, then copy `oot.o2r` (or
+`oot-mq.o2r` for Master Quest) into `/3ds/soh/` on the SD card. Use a desktop SoH
+version compatible with this port; setup validates the archive version before
+using it. A valid archive lets setup skip game extraction.
+
+**Archive format:** this port uses `.o2r`, not the legacy `.otr` format produced
+by older SoH releases. Renaming an `.otr` file to `.o2r` will not convert it;
+generate a compatible `.o2r` with SoH instead.
+
 ## Host build and tests
 
 Requires CMake 3.20 or newer, a C++20 compiler, Python 3, and Bash. From the
