@@ -13,6 +13,7 @@
 #include "libultraship/controller/controldeck/Controls3DS.h"
 #include "ship/controller/controldevice/controller/mapping/sdl/SDLButtonToButtonMapping.h"
 #include "ship/controller/controldevice/controller/mapping/sdl/SDLAxisDirectionToButtonMapping.h"
+#include "ship/controller/controldevice/controller/mapping/sdl/SDLAxisDirectionToAxisDirectionMapping.h"
 // MUST be file scope with C linkage. A block-scope `extern` inside
 // `namespace LUS` mangles to LUS::Soh3dsPadProbe, which is a different symbol:
 // weak, never defined, always null, so the probe silently never fires and its
@@ -21,6 +22,37 @@ extern "C" void Soh3dsPadProbe(unsigned int button, int stickX, int stickY) __at
 extern "C" void Soh3dsControls_TransformPad(uint32_t physicalButtons, uint16_t* buttons) __attribute__((weak));
 
 namespace {
+void Soh3dsControls_EnsureCameraMappings(const std::shared_ptr<Ship::Controller>& controller) {
+    constexpr const char* versionKey = "gSoh3dsCameraMappingVersion";
+    if (controller == nullptr || CVarGetInteger(versionKey, 0) >= 1) {
+        return;
+    }
+    // Older saved profiles can have the console button layout but no right
+    // stick bindings. Repair directions independently without resetting any
+    // existing mapping, sensitivity, deadzone, or explicit camera preference.
+    const auto stick = controller->GetRightStick();
+    bool changed = false;
+    for (auto direction : { Ship::LEFT, Ship::RIGHT, Ship::UP, Ship::DOWN }) {
+        if (!stick->GetAllAxisDirectionMappingByDirection(direction).empty()) {
+            continue;
+        }
+        const auto axis = (direction == Ship::LEFT || direction == Ship::RIGHT)
+                              ? SDL_CONTROLLER_AXIS_RIGHTX : SDL_CONTROLLER_AXIS_RIGHTY;
+        const int sign = (direction == Ship::LEFT || direction == Ship::UP) ? -1 : 1;
+        auto mapping = std::make_shared<Ship::SDLAxisDirectionToAxisDirectionMapping>(
+            0, Ship::RIGHT_STICK, direction, axis, sign);
+        stick->AddAxisDirectionMapping(direction, mapping);
+        mapping->SaveToConfig();
+        changed = true;
+    }
+    if (changed) {
+        stick->SaveAxisDirectionMappingIdsToConfig();
+    }
+    CVarSetInteger("gSettings.FreeLook.Enabled", CVarGetInteger("gSettings.FreeLook.Enabled", 1));
+    CVarSetInteger(versionKey, 1);
+    CVarSave();
+}
+
 std::shared_ptr<Ship::Controller> Soh3dsControls_Controller() {
     auto context = Ship::Context::GetRawInstance();
     return context == nullptr || context->GetControlDeck() == nullptr ? nullptr
@@ -238,6 +270,8 @@ void ControlDeck::WriteToOSContPad(OSContPad* pad) {
                     kInputLayoutVersion);
         }
     }
+
+    Soh3dsControls_EnsureCameraMappings(mPorts[0]->GetConnectedController());
 
     // The controls page's managed layouts use raw console buttons here, after
     // the ordinary mapping read and immediately before the game consumes the

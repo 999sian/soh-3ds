@@ -4,6 +4,7 @@
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 
 
@@ -195,3 +196,5 @@ with tempfile.TemporaryDirectory(prefix="soh-controls-3ds-") as temporary:
         str(source), str(INPUT_POLICY), "-o", str(binary),
     ], check=True)
     subprocess.run([str(binary)], check=True)
+
+subprocess.run([sys.executable, str(ROOT / "tests/cstick_defaults_test.py")], check=True)

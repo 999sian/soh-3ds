@@ -30,6 +30,14 @@ using it. A valid archive lets setup skip game extraction.
 by older SoH releases. Renaming an `.otr` file to `.o2r` will not convert it;
 generate a compatible `.o2r` with SoH instead.
 
+## Camera controls
+
+The New 3DS C-stick controls the camera by default. On the first launch after
+updating, missing C-stick bindings in older profiles are restored automatically;
+existing bindings, sensitivity, and deadzone settings are preserved. No separate
+settings file is required. Use **Controls → Enable C-stick camera** to turn
+free-look on or off; a saved Off preference is preserved.
+
 ## Host build and tests
 
 Requires CMake 3.20 or newer, a C++20 compiler, Python 3, and Bash. From the
