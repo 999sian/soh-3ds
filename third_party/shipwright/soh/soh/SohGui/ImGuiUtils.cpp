@@ -1,0 +1,275 @@
+#include <ship/Context.h>
+#include <fast/Fast3dGui.h>
+
+#include "ImGuiUtils.h"
+#include "soh/Enhancements/randomizer/rando_hash.h"
+#include "soh/Enhancements/randomizer/randomizerTypes.h"
+
+extern "C" {
+#include "assets/soh_assets.h"
+#include "textures/icon_item_static/icon_item_static.h"
+#include "textures/parameter_static/parameter_static.h"
+}
+
+std::map<uint32_t, ItemMapEntry> itemMapping = {
+    ITEM_MAP_ENTRY(ITEM_STICK),
+    ITEM_MAP_ENTRY(ITEM_NUT),
+    ITEM_MAP_ENTRY(ITEM_BOMB),
+    ITEM_MAP_ENTRY(ITEM_BOW),
+    ITEM_MAP_ENTRY(ITEM_ARROW_FIRE),
+    ITEM_MAP_ENTRY(ITEM_DINS_FIRE),
+    ITEM_MAP_ENTRY(ITEM_SLINGSHOT),
+    ITEM_MAP_ENTRY(ITEM_OCARINA_FAIRY),
+    ITEM_MAP_ENTRY(ITEM_OCARINA_TIME),
+    ITEM_MAP_ENTRY(ITEM_BOMBCHU),
+    ITEM_MAP_ENTRY(ITEM_HOOKSHOT),
+    ITEM_MAP_ENTRY(ITEM_LONGSHOT),
+    ITEM_MAP_ENTRY(ITEM_ARROW_ICE),
+    ITEM_MAP_ENTRY(ITEM_FARORES_WIND),
+    ITEM_MAP_ENTRY(ITEM_BOOMERANG),
+    ITEM_MAP_ENTRY(ITEM_LENS),
+    ITEM_MAP_ENTRY(ITEM_BEAN),
+    ITEM_MAP_ENTRY(ITEM_HAMMER),
+    ITEM_MAP_ENTRY(ITEM_ARROW_LIGHT),
+    ITEM_MAP_ENTRY(ITEM_NAYRUS_LOVE),
+    ITEM_MAP_ENTRY(ITEM_BOTTLE),
+    ITEM_MAP_ENTRY(ITEM_POTION_RED),
+    ITEM_MAP_ENTRY(ITEM_POTION_GREEN),
+    ITEM_MAP_ENTRY(ITEM_POTION_BLUE),
+    ITEM_MAP_ENTRY(ITEM_FAIRY),
+    ITEM_MAP_ENTRY(ITEM_FISH),
+    ITEM_MAP_ENTRY(ITEM_MILK_BOTTLE),
+    ITEM_MAP_ENTRY(ITEM_LETTER_RUTO),
+    ITEM_MAP_ENTRY(ITEM_BLUE_FIRE),
+    ITEM_MAP_ENTRY(ITEM_BUG),
+    ITEM_MAP_ENTRY(ITEM_BIG_POE),
+    ITEM_MAP_ENTRY(ITEM_MILK_HALF),
+    ITEM_MAP_ENTRY(ITEM_POE),
+    ITEM_MAP_ENTRY(ITEM_WEIRD_EGG),
+    ITEM_MAP_ENTRY(ITEM_CHICKEN),
+    ITEM_MAP_ENTRY(ITEM_LETTER_ZELDA),
+    ITEM_MAP_ENTRY(ITEM_MASK_KEATON),
+    ITEM_MAP_ENTRY(ITEM_MASK_SKULL),
+    ITEM_MAP_ENTRY(ITEM_MASK_SPOOKY),
+    ITEM_MAP_ENTRY(ITEM_MASK_BUNNY),
+    ITEM_MAP_ENTRY(ITEM_MASK_GORON),
+    ITEM_MAP_ENTRY(ITEM_MASK_ZORA),
+    ITEM_MAP_ENTRY(ITEM_MASK_GERUDO),
+    ITEM_MAP_ENTRY(ITEM_MASK_TRUTH),
+    ITEM_MAP_ENTRY(ITEM_SOLD_OUT),
+    ITEM_MAP_ENTRY(ITEM_POCKET_EGG),
+    ITEM_MAP_ENTRY(ITEM_POCKET_CUCCO),
+    ITEM_MAP_ENTRY(ITEM_COJIRO),
+    ITEM_MAP_ENTRY(ITEM_ODD_MUSHROOM),
+    ITEM_MAP_ENTRY(ITEM_ODD_POTION),
+    ITEM_MAP_ENTRY(ITEM_SAW),
+    ITEM_MAP_ENTRY(ITEM_SWORD_BROKEN),
+    ITEM_MAP_ENTRY(ITEM_PRESCRIPTION),
+    ITEM_MAP_ENTRY(ITEM_FROG),
+    ITEM_MAP_ENTRY(ITEM_EYEDROPS),
+    ITEM_MAP_ENTRY(ITEM_CLAIM_CHECK),
+    ITEM_MAP_ENTRY(ITEM_BOW_ARROW_FIRE),
+    ITEM_MAP_ENTRY(ITEM_BOW_ARROW_ICE),
+    ITEM_MAP_ENTRY(ITEM_BOW_ARROW_LIGHT),
+    ITEM_MAP_ENTRY(ITEM_SWORD_KOKIRI),
+    ITEM_MAP_ENTRY(ITEM_SWORD_MASTER),
+    ITEM_MAP_ENTRY(ITEM_SWORD_BGS),
+    ITEM_MAP_ENTRY(ITEM_SHIELD_DEKU),
+    ITEM_MAP_ENTRY(ITEM_SHIELD_HYLIAN),
+    ITEM_MAP_ENTRY(ITEM_SHIELD_MIRROR),
+    ITEM_MAP_ENTRY(ITEM_TUNIC_KOKIRI),
+    ITEM_MAP_ENTRY(ITEM_TUNIC_GORON),
+    ITEM_MAP_ENTRY(ITEM_TUNIC_ZORA),
+    ITEM_MAP_ENTRY(ITEM_BOOTS_KOKIRI),
+    ITEM_MAP_ENTRY(ITEM_BOOTS_IRON),
+    ITEM_MAP_ENTRY(ITEM_BOOTS_HOVER),
+    ITEM_MAP_ENTRY(ITEM_BULLET_BAG_30),
+    ITEM_MAP_ENTRY(ITEM_BULLET_BAG_40),
+    ITEM_MAP_ENTRY(ITEM_BULLET_BAG_50),
+    ITEM_MAP_ENTRY(ITEM_QUIVER_30),
+    ITEM_MAP_ENTRY(ITEM_QUIVER_40),
+    ITEM_MAP_ENTRY(ITEM_QUIVER_50),
+    ITEM_MAP_ENTRY(ITEM_BOMB_BAG_20),
+    ITEM_MAP_ENTRY(ITEM_BOMB_BAG_30),
+    ITEM_MAP_ENTRY(ITEM_BOMB_BAG_40),
+    ITEM_MAP_ENTRY(ITEM_BRACELET),
+    ITEM_MAP_ENTRY(ITEM_GAUNTLETS_SILVER),
+    ITEM_MAP_ENTRY(ITEM_GAUNTLETS_GOLD),
+    ITEM_MAP_ENTRY(ITEM_SCALE_SILVER),
+    ITEM_MAP_ENTRY(ITEM_SCALE_GOLDEN),
+    ITEM_MAP_ENTRY(ITEM_SWORD_KNIFE),
+    ITEM_MAP_ENTRY(ITEM_WALLET_ADULT),
+    ITEM_MAP_ENTRY(ITEM_WALLET_GIANT),
+    ITEM_MAP_ENTRY(ITEM_SEEDS),
+    ITEM_MAP_ENTRY(ITEM_FISHING_POLE),
+    ITEM_MAP_ENTRY(ITEM_SONG_MINUET),
+    ITEM_MAP_ENTRY(ITEM_SONG_BOLERO),
+    ITEM_MAP_ENTRY(ITEM_SONG_SERENADE),
+    ITEM_MAP_ENTRY(ITEM_SONG_REQUIEM),
+    ITEM_MAP_ENTRY(ITEM_SONG_NOCTURNE),
+    ITEM_MAP_ENTRY(ITEM_SONG_PRELUDE),
+    ITEM_MAP_ENTRY(ITEM_SONG_LULLABY),
+    ITEM_MAP_ENTRY(ITEM_SONG_EPONA),
+    ITEM_MAP_ENTRY(ITEM_SONG_SARIA),
+    ITEM_MAP_ENTRY(ITEM_SONG_SUN),
+    ITEM_MAP_ENTRY(ITEM_SONG_TIME),
+    ITEM_MAP_ENTRY(ITEM_SONG_STORMS),
+    ITEM_MAP_ENTRY(ITEM_MEDALLION_FOREST),
+    ITEM_MAP_ENTRY(ITEM_MEDALLION_FIRE),
+    ITEM_MAP_ENTRY(ITEM_MEDALLION_WATER),
+    ITEM_MAP_ENTRY(ITEM_MEDALLION_SPIRIT),
+    ITEM_MAP_ENTRY(ITEM_MEDALLION_SHADOW),
+    ITEM_MAP_ENTRY(ITEM_MEDALLION_LIGHT),
+    ITEM_MAP_ENTRY(ITEM_KOKIRI_EMERALD),
+    ITEM_MAP_ENTRY(ITEM_GORON_RUBY),
+    ITEM_MAP_ENTRY(ITEM_ZORA_SAPPHIRE),
+    ITEM_MAP_ENTRY(ITEM_STONE_OF_AGONY),
+    ITEM_MAP_ENTRY(ITEM_GERUDO_CARD),
+    ITEM_MAP_ENTRY(ITEM_SKULL_TOKEN),
+    ITEM_MAP_ENTRY(ITEM_HEART_CONTAINER),
+    ITEM_MAP_ENTRY(ITEM_HEART_PIECE),
+    ITEM_MAP_ENTRY(ITEM_KEY_BOSS),
+    ITEM_MAP_ENTRY(ITEM_COMPASS),
+    ITEM_MAP_ENTRY(ITEM_DUNGEON_MAP),
+    ITEM_MAP_ENTRY(ITEM_KEY_SMALL),
+    ITEM_MAP_ENTRY(ITEM_MAGIC_SMALL),
+    ITEM_MAP_ENTRY(ITEM_MAGIC_LARGE),
+};
+
+std::map<uint32_t, ItemMapEntry> gregMapping = {
+    { ITEM_RUPEE_GREEN, { ITEM_RUPEE_GREEN, "ITEM_RUPEE_GREEN", "ITEM_RUPEE_GREEN_Faded", gRupeeCounterIconTex } }
+};
+
+std::map<uint32_t, ItemMapEntry> customItemsMapping = {
+    { RG_TRIFORCE_PIECE, { RG_TRIFORCE_PIECE, "RG_TRIFORCE_PIECE", "RG_TRIFORCE_PIECE_Faded", gTriforcePieceTex } },
+    { RG_ROCS_FEATHER, { RG_ROCS_FEATHER, "RG_ROCS_FEATHER", "RG_ROCS_FEATHER_Faded", gRocsFeatherTex } },
+    { RG_GOHMA_SOUL, { RG_GOHMA_SOUL, "RG_GOHMA_SOUL", "RG_GOHMA_SOUL_Faded", gBossSoulTex } },
+    { RG_KING_DODONGO_SOUL,
+      { RG_KING_DODONGO_SOUL, "RG_KING_DODONGO_SOUL", "RG_KING_DODONGO_SOUL_Faded", gBossSoulTex } },
+    { RG_BARINADE_SOUL, { RG_BARINADE_SOUL, "RG_BARINADE_SOUL", "RG_BARINADE_SOUL_Faded", gBossSoulTex } },
+    { RG_PHANTOM_GANON_SOUL,
+      { RG_PHANTOM_GANON_SOUL, "RG_PHANTOM_GANON_SOUL", "RG_PHANTOM_GANON_SOUL_Faded", gBossSoulTex } },
+    { RG_VOLVAGIA_SOUL, { RG_VOLVAGIA_SOUL, "RG_VOLVAGIA_SOUL", "RG_VOLVAGIA_SOUL_Faded", gBossSoulTex } },
+    { RG_MORPHA_SOUL, { RG_MORPHA_SOUL, "RG_MORPHA_SOUL", "RG_MORPHA_SOUL_Faded", gBossSoulTex } },
+    { RG_BONGO_BONGO_SOUL, { RG_BONGO_BONGO_SOUL, "RG_BONGO_BONGO_SOUL", "RG_BONGO_BONGO_SOUL_Faded", gBossSoulTex } },
+    { RG_TWINROVA_SOUL, { RG_TWINROVA_SOUL, "RG_TWINROVA_SOUL", "RG_TWINROVA_SOUL_Faded", gBossSoulTex } },
+    { RG_GANON_SOUL, { RG_GANON_SOUL, "RG_GANON_SOUL", "RG_GANON_SOUL_Faded", gBossSoulTex } },
+    { RG_OPEN_CHEST, { RG_OPEN_CHEST, "RG_OPEN_CHEST", "RG_OPEN_CHEST_Faded", gOpenChestsTex } },
+    { RG_CRAWL, { RG_CRAWL, "RG_CRAWL", "RG_CRAWL_Faded", gCrawlTex } },
+    { RG_CLIMB, { RG_CLIMB, "RG_CLIMB", "RG_CLIMB_Faded", gClimbTex } },
+    {
+        RG_POWER_BRACELET,
+        { RG_POWER_BRACELET, "RG_POWER_BRACELET", "RG_POWER_BRACELET_Faded", gGrabTex },
+    },
+};
+
+std::map<uint32_t, ItemMapEntry> jabbernutMapping = {
+    { RG_SPEAK_DEKU, { RG_SPEAK_DEKU, "RG_SPEAK_DEKU", "RG_SPEAK_DEKU_Faded", (char*)gItemIcons[ITEM_NUT] } },
+    { RG_SPEAK_GERUDO, { RG_SPEAK_GERUDO, "RG_SPEAK_GERUDO", "RG_SPEAK_GERUDO_Faded", (char*)gItemIcons[ITEM_NUT] } },
+    { RG_SPEAK_GORON, { RG_SPEAK_GORON, "RG_SPEAK_GORON", "RG_SPEAK_GORON_Faded", (char*)gItemIcons[ITEM_NUT] } },
+    { RG_SPEAK_HYLIAN, { RG_SPEAK_HYLIAN, "RG_SPEAK_HYLIAN", "RG_SPEAK_HYLIAN_Faded", (char*)gItemIcons[ITEM_NUT] } },
+    { RG_SPEAK_KOKIRI, { RG_SPEAK_KOKIRI, "RG_SPEAK_KOKIRI", "RG_SPEAK_KOKIRI_Faded", (char*)gItemIcons[ITEM_NUT] } },
+    { RG_SPEAK_ZORA, { RG_SPEAK_ZORA, "RG_SPEAK_ZORA", "RG_SPEAK_ZORA_Faded", (char*)gItemIcons[ITEM_NUT] } },
+};
+
+std::map<uint32_t, QuestMapEntry> questMapping = {
+    QUEST_MAP_ENTRY(QUEST_MEDALLION_FOREST, dgQuestIconMedallionForestTex),
+    QUEST_MAP_ENTRY(QUEST_MEDALLION_FIRE, dgQuestIconMedallionFireTex),
+    QUEST_MAP_ENTRY(QUEST_MEDALLION_WATER, dgQuestIconMedallionWaterTex),
+    QUEST_MAP_ENTRY(QUEST_MEDALLION_SPIRIT, dgQuestIconMedallionSpiritTex),
+    QUEST_MAP_ENTRY(QUEST_MEDALLION_SHADOW, dgQuestIconMedallionShadowTex),
+    QUEST_MAP_ENTRY(QUEST_MEDALLION_LIGHT, dgQuestIconMedallionLightTex),
+    QUEST_MAP_ENTRY(QUEST_KOKIRI_EMERALD, dgQuestIconKokiriEmeraldTex),
+    QUEST_MAP_ENTRY(QUEST_GORON_RUBY, dgQuestIconGoronRubyTex),
+    QUEST_MAP_ENTRY(QUEST_ZORA_SAPPHIRE, dgQuestIconZoraSapphireTex),
+    QUEST_MAP_ENTRY(QUEST_STONE_OF_AGONY, dgQuestIconStoneOfAgonyTex),
+    QUEST_MAP_ENTRY(QUEST_GERUDO_CARD, dgQuestIconGerudosCardTex),
+    QUEST_MAP_ENTRY(QUEST_SKULL_TOKEN, dgQuestIconGoldSkulltulaTex),
+};
+
+std::map<QuestItem, SongMapEntry> songMapping = {
+    SONG_MAP_ENTRY(QUEST_SONG_LULLABY, 224, 107, 255),  SONG_MAP_ENTRY(QUEST_SONG_EPONA, 255, 195, 60),
+    SONG_MAP_ENTRY(QUEST_SONG_SARIA, 127, 255, 137),    SONG_MAP_ENTRY(QUEST_SONG_SUN, 255, 255, 60),
+    SONG_MAP_ENTRY(QUEST_SONG_TIME, 119, 236, 255),     SONG_MAP_ENTRY(QUEST_SONG_STORMS, 165, 165, 165),
+    SONG_MAP_ENTRY(QUEST_SONG_MINUET, 150, 255, 100),   SONG_MAP_ENTRY(QUEST_SONG_BOLERO, 255, 80, 40),
+    SONG_MAP_ENTRY(QUEST_SONG_SERENADE, 100, 150, 255), SONG_MAP_ENTRY(QUEST_SONG_REQUIEM, 255, 160, 0),
+    SONG_MAP_ENTRY(QUEST_SONG_NOCTURNE, 255, 100, 255), SONG_MAP_ENTRY(QUEST_SONG_PRELUDE, 255, 240, 100),
+};
+
+std::array<SongMapEntry, 12> vanillaSongMapping = { {
+    VANILLA_SONG_MAP_ENTRY(QUEST_SONG_LULLABY, 255, 255, 255),
+    VANILLA_SONG_MAP_ENTRY(QUEST_SONG_EPONA, 255, 255, 255),
+    VANILLA_SONG_MAP_ENTRY(QUEST_SONG_SARIA, 255, 255, 255),
+    VANILLA_SONG_MAP_ENTRY(QUEST_SONG_SUN, 255, 255, 255),
+    VANILLA_SONG_MAP_ENTRY(QUEST_SONG_TIME, 255, 255, 255),
+    VANILLA_SONG_MAP_ENTRY(QUEST_SONG_STORMS, 255, 255, 255),
+    VANILLA_SONG_MAP_ENTRY(QUEST_SONG_MINUET, 150, 255, 100),
+    VANILLA_SONG_MAP_ENTRY(QUEST_SONG_BOLERO, 255, 80, 40),
+    VANILLA_SONG_MAP_ENTRY(QUEST_SONG_SERENADE, 100, 150, 255),
+    VANILLA_SONG_MAP_ENTRY(QUEST_SONG_REQUIEM, 255, 160, 0),
+    VANILLA_SONG_MAP_ENTRY(QUEST_SONG_NOCTURNE, 255, 100, 255),
+    VANILLA_SONG_MAP_ENTRY(QUEST_SONG_PRELUDE, 255, 240, 100),
+} };
+
+const char* GetTextureForItemId(uint32_t itemId) {
+    auto it = itemMapping.find(itemId);
+    if (it != itemMapping.end()) {
+        return it->second.name.c_str();
+    }
+    return nullptr;
+}
+
+void RegisterImGuiItemIcons() {
+    auto gui = std::dynamic_pointer_cast<Fast::Fast3dGui>(Ship::Context::GetRawInstance()->GetWindow()->GetGui());
+    for (const auto& entry : itemMapping) {
+        gui->LoadGuiTexture(entry.second.name, entry.second.texturePath, "", ImVec4(1, 1, 1, 1));
+        gui->LoadGuiTexture(entry.second.nameFaded, entry.second.texturePath, "", ImVec4(1, 1, 1, 0.3f));
+    }
+
+    for (const auto& entry : gregMapping) {
+        ImVec4 gregGreen = ImVec4(42.0f / 255.0f, 169.0f / 255.0f, 40.0f / 255.0f, 1.0f);
+        ImVec4 gregFadedGreen = gregGreen;
+        gregFadedGreen.w = 0.3f;
+        gui->LoadGuiTexture(entry.second.name, entry.second.texturePath, "", gregGreen);
+        gui->LoadGuiTexture(entry.second.nameFaded, entry.second.texturePath, "", gregFadedGreen);
+    }
+
+    for (const auto& entry : customItemsMapping) {
+        gui->LoadGuiTexture(entry.second.name, entry.second.texturePath, "", ImVec4(1, 1, 1, 1));
+        gui->LoadGuiTexture(entry.second.nameFaded, entry.second.texturePath, "", ImVec4(1, 1, 1, 0.3f));
+    }
+
+    for (const auto& entry : jabbernutMapping) {
+        gui->LoadGuiTexture(entry.second.name, entry.second.texturePath, "", ImVec4(1, 1, 1, 1));
+        gui->LoadGuiTexture(entry.second.nameFaded, entry.second.texturePath, "", ImVec4(1, 1, 1, 0.3f));
+    }
+
+    ImVec4 silver = ImVec4(0.7f, 0.7f, 0.7f, 1.0f);
+    ImVec4 silverFaded = silver;
+    silverFaded.w = 0.3f;
+    gui->LoadGuiTexture("ITEM_RUPEE_SILVER", gRupeeCounterIconTex, "", silver);
+    gui->LoadGuiTexture("ITEM_RUPEE_SILVER_Faded", gRupeeCounterIconTex, "", silverFaded);
+
+    for (const auto& entry : questMapping) {
+        gui->LoadGuiTexture(entry.second.name, entry.second.texturePath, "", ImVec4(1, 1, 1, 1));
+        gui->LoadGuiTexture(entry.second.nameFaded, entry.second.texturePath, "", ImVec4(1, 1, 1, 0.3f));
+    }
+
+    for (const auto& [quest, entry] : songMapping) {
+        gui->LoadGuiTexture(entry.name, gSongNoteTex, "", entry.color);
+        ImVec4 fadedCol = entry.color;
+        fadedCol.w = 0.3f;
+        gui->LoadGuiTexture(entry.nameFaded, gSongNoteTex, "", fadedCol);
+    }
+
+    for (const auto& entry : vanillaSongMapping) {
+        gui->LoadGuiTexture(entry.name, gSongNoteTex, "", entry.color);
+        ImVec4 fadedCol = entry.color;
+        fadedCol.w = 0.3f;
+        gui->LoadGuiTexture(entry.nameFaded, gSongNoteTex, "", fadedCol);
+    }
+
+    for (const auto& entry : gSeedTextures) {
+        gui->LoadGuiTexture(entry.tex, entry.tex, "", ImVec4(1, 1, 1, 1));
+    }
+}

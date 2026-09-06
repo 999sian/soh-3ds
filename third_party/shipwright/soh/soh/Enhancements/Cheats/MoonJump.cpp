@@ -1,0 +1,27 @@
+#include "soh/Enhancements/game-interactor/GameInteractor.h"
+#include "soh/ShipInit.hpp"
+#include "soh/cvar_prefixes.h"
+
+extern "C" {
+#include "z64.h"
+#include "macros.h"
+extern PlayState* gPlayState;
+}
+
+#define CVAR_MOON_JUMP_NAME CVAR_CHEAT("MoonJumpOnL")
+#define CVAR_MOON_JUMP_DEFAULT 0
+#define CVAR_MOON_JUMP_VALUE CVarGetInteger(CVAR_MOON_JUMP_NAME, CVAR_MOON_JUMP_DEFAULT)
+
+void OnPlayerUpdateMoonJump() {
+    Player* player = GET_PLAYER(gPlayState);
+
+    if (player != nullptr && CHECK_BTN_ANY(gPlayState->state.input[0].cur.button, BTN_L)) {
+        player->actor.velocity.y = 6.34375f;
+    }
+}
+
+void RegisterMoonJump() {
+    COND_HOOK(OnPlayerUpdate, CVAR_MOON_JUMP_VALUE, OnPlayerUpdateMoonJump);
+}
+
+static RegisterShipInitFunc initFunc(RegisterMoonJump, { CVAR_MOON_JUMP_NAME });

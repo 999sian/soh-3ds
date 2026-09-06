@@ -1,0 +1,13 @@
+#pragma once
+
+#include <libultraship/window/gui/GfxDebuggerWindow.h>
+
+class SohGfxDebuggerWindow : public LUS::GfxDebuggerWindow {
+  public:
+    using GfxDebuggerWindow::GfxDebuggerWindow;
+
+  protected:
+    void InitElement() override;
+    void UpdateElement() override;
+    void DrawElement() override;
+};

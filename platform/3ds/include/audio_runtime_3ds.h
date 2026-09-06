@@ -1,0 +1,18 @@
+#pragma once
+
+#include <stdbool.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+bool Mk64GameAudio3DSInit(void);
+void Mk64GameAudio3DSSetPaused(bool paused);
+void Mk64GameAudio3DSBeginFrame(void);
+void Mk64GameAudio3DSPump(void);
+void Mk64GameAudio3DSShutdown(void);
+void Mk64GameAudio3DSAbortForProcessExit(void);
+
+#ifdef __cplusplus
+}
+#endif

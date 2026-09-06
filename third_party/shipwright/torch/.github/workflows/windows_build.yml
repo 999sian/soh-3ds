@@ -1,0 +1,71 @@
+name: Windows Compile
+
+on:
+  push:
+    branches: [ "*" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  build:
+    runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix:
+        config: [Release, Debug]
+        toolchain: [windows-msvc, windows-clang-cl]
+        standalone: [OFF, ON]
+        generate: [Visual Studio 17 2022, Ninja]
+        arch: [x64, Win32]
+        isPR:
+          - ${{ github.event_name == 'pull_request' }}
+        exclude:
+          - toolchain: windows-clang-cl
+            arch: Win32
+          - toolchain: windows-clang-cl
+            generate: Visual Studio 17 2022
+          - isPR: true
+            standalone: OFF
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cache vcpkg
+        uses: actions/cache@v4
+        with:
+          key: ${{ runner.os }}-vcpkg-x64-windows-static-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-vcpkg-x64-windows-static-
+          path: D:/a/vcpkg
+      - name: Build Visual Studio
+        if: ${{ matrix.generate == 'Visual Studio 17 2022' }}
+        env:
+          VCPKG_ROOT: D:/a/vcpkg
+        run: |
+          # Enable the viewer in CI (BUILD_UI is off by default), except on Win32:
+          # libultraship is x64-only. Its automate-vcpkg bootstraps vcpkg to
+          # fetch SDL2/GLEW/libzip/nlohmann-json/tinyxml2/spdlog.
+          cmake -S . -B "build/${{ matrix.arch }}" -G "${{ matrix.generate }}" -DCMAKE_TOOLCHAIN_FILE="cmake/toolchain/${{ matrix.toolchain }}.cmake" -DCMAKE_GENERATOR_PLATFORM=${{ matrix.arch }} -DCMAKE_BUILD_TYPE:STRING=${{ matrix.config }} -DUSE_STANDALONE=${{ matrix.standalone }} -DBUILD_UI=${{ matrix.arch == 'Win32' && 'OFF' || 'ON' }} -DUSE_AUTO_VCPKG=ON -DVCPKG_TARGET_TRIPLET=x64-windows-static
+          # Multi-config generator: pass --config, else it builds Debug and the
+          # Release artifact path below finds nothing.
+          cmake --build ./build/${{ matrix.arch }} --config ${{ matrix.config }}
+      - name: Setup Variables
+        if: ${{ matrix.generate == 'Ninja' }}
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: ${{ matrix.arch }}
+      - name: Build Ninja
+        if: ${{ matrix.generate == 'Ninja' }}
+        env:
+          VCPKG_ROOT: D:/a/vcpkg
+        run: |
+          # Enable the viewer in CI, off on Win32 (libultraship is x64-only). Ninja
+          # is single-platform, so name the vcpkg triplet explicitly (there is no
+          # CMAKE_VS_PLATFORM_NAME for automate-vcpkg to key off).
+          cmake -S . -B "build/${{ matrix.arch }}" -G "${{ matrix.generate }}" -DCMAKE_TOOLCHAIN_FILE="cmake/toolchain/${{ matrix.toolchain }}.cmake" -DCMAKE_BUILD_TYPE:STRING=${{ matrix.config }} -DUSE_STANDALONE=${{ matrix.standalone }} -DBUILD_UI=${{ matrix.arch == 'Win32' && 'OFF' || 'ON' }} -DUSE_AUTO_VCPKG=ON -DVCPKG_TARGET_TRIPLET=x64-windows-static
+          cmake --build ./build/${{ matrix.arch }}
+      - name: Publish packaged artifacts
+        if: ${{ matrix.config == 'Release' && matrix.generate == 'Visual Studio 17 2022' && matrix.standalone == 'ON' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: torch-windows-${{ matrix.arch }}-${{ matrix.toolchain }}
+          path: build/${{ matrix.arch }}/Release/torch.exe
+          if-no-files-found: error

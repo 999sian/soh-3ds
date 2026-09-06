@@ -1,0 +1,237 @@
+#include "game_data_3ds.h"
+#include "audio_runtime_3ds.h"
+#include "bottom_ui_3ds.h"
+#include "diagnostics_3ds.h"
+#include "game_runtime_3ds.h"
+#include "game_state_3ds.h"
+#include "input_3ds.h"
+#include "resource_runtime_3ds.h"
+#include "settings_3ds.h"
+
+#include <3ds.h>
+
+#include <array>
+#include <cstdio>
+#include <cstdlib>
+#include <exception>
+#include <new>
+
+extern "C" {
+extern int32_t gMenuSelection;
+void initialize_memory_pool(void);
+int Mk64MemoryArena3DSIsReady(void);
+void audio_init(void);
+void osInitialize(void);
+void sound_init(void);
+void thread5_game_loop(void);
+void thread5_iteration(void);
+}
+
+extern "C" {
+// Match the CIA exheader. Four MiB was unnecessarily reserved by 3DSX builds
+// and reduced the heap available to the first-run installer on Old 3DS.
+uint32_t __stacksize__ = 1 * 1024 * 1024;
+
+// E4 hardware evidence captured std::bad_alloc with roughly 14.5 MiB still
+// free in the linear heap but only 1.8 MiB, badly fragmented, in the ordinary
+// C/C++ heap. The 24 MiB reservation still leaves several MiB above the E4
+// linear working set, including the larger New 3DS texture-cache profile,
+// while returning another 4 MiB to strings, maps and other ordinary objects.
+uint32_t __ctru_linear_heap_size = 24 * 1024 * 1024;
+}
+
+namespace {
+constexpr int32_t kLogoIntroMenu = 8;
+constexpr uint64_t kSimulationRate = 30;
+
+[[noreturn]] void TerminateHandler() noexcept {
+    const char* reason = "std::terminate without an active exception";
+    if (std::current_exception() != nullptr) {
+        try {
+            std::rethrow_exception(std::current_exception());
+        } catch (const std::bad_alloc&) {
+            reason = "uncaught std::bad_alloc";
+        } catch (const std::exception& exception) {
+            reason = exception.what();
+        } catch (...) {
+            reason = "uncaught non-standard C++ exception";
+        }
+    }
+    Mk64Diagnostics3DSEmergency(reason);
+    std::_Exit(1);
+}
+
+[[noreturn]] void ExitWithError(const char* message) {
+    gfxInitDefault();
+    consoleInit(GFX_TOP, nullptr);
+    std::printf("Mario Kart 64 3DS\n\n%s\n\nPress START to exit.\n", message);
+    while (aptMainLoop()) {
+        hidScanInput();
+        if ((hidKeysDown() & KEY_START) != 0) break;
+        gspWaitForVBlank();
+    }
+    gfxExit();
+    std::_Exit(1);
+}
+}
+
+int main() {
+    std::set_terminate(TerminateHandler);
+    Mk64Diagnostics3DSStart();
+    Mk64Diagnostics3DSCheckpoint("game-data-init");
+    const Mk64GameData3DSResult data = Mk64GameData3DSEnsure();
+    if (data.status != MK64_GAME_DATA_READY || data.archivePath == nullptr) {
+        Mk64Diagnostics3DSCheckpoint("game-data-failed");
+        Mk64Diagnostics3DSStop();
+        ExitWithError(data.message);
+    }
+    Mk64Diagnostics3DSCheckpoint("game-data-ready");
+    Mk64Settings3DSLoad();
+
+    // First-run extraction needs the regular heap for Torch's ROM buffer and
+    // per-file YAML data. Reserve the vanilla arena only after mk64.o2r is
+    // ready, but still before the resource index and Citro3D allocate memory.
+    initialize_memory_pool();
+    if (!Mk64MemoryArena3DSIsReady()) {
+        Mk64Diagnostics3DSCheckpoint("game-arena-init-failed");
+        Mk64Diagnostics3DSStop();
+        ExitWithError("Not enough application memory for the 8 MiB game arena.");
+    }
+    Mk64Diagnostics3DSCheckpoint("game-arena-ready");
+
+    Mk64Diagnostics3DSCheckpoint("resource-runtime-init");
+    if (!Mk64Resource3DSInit(data.archivePath)) {
+        Mk64Diagnostics3DSCheckpoint("resource-runtime-init-failed");
+        Mk64Diagnostics3DSStop();
+        ExitWithError("mk64.o2r could not be opened or is not a supported archive.");
+    }
+    Mk64Diagnostics3DSCheckpoint("resource-runtime-ready");
+    Mk64Diagnostics3DSCheckpoint("graphics-init");
+    if (!Mk64Graphics3DSInit()) {
+        Mk64Diagnostics3DSCheckpoint("graphics-init-failed");
+        Mk64Resource3DSShutdown();
+        Mk64Diagnostics3DSStop();
+        ExitWithError("The native Citro3D renderer could not be initialized.");
+    }
+    Mk64Diagnostics3DSCheckpoint("graphics-ready");
+
+    Mk64Diagnostics3DSCheckpoint("libultra-init");
+    osInitialize();
+    Mk64Input3DSInit();
+    Mk64Diagnostics3DSCheckpoint("game-state-init");
+    if (!Mk64GameState3DSInit()) {
+        Mk64Diagnostics3DSCheckpoint("game-state-init-failed");
+        Mk64Graphics3DSShutdown();
+        Mk64Resource3DSShutdown();
+        Mk64Diagnostics3DSStop();
+        ExitWithError("The vanilla game state could not be initialized.");
+    }
+    Mk64Diagnostics3DSCheckpoint("game-state-ready");
+
+    Mk64Diagnostics3DSCheckpoint("audio-init");
+    audio_init();
+    sound_init();
+    if (Mk64GameAudio3DSInit()) {
+        Mk64Diagnostics3DSCheckpoint("audio-ready");
+    } else {
+        Mk64Diagnostics3DSCheckpoint("audio-init-failed");
+        Mk64Graphics3DSShutdown();
+        Mk64Resource3DSShutdown();
+        Mk64Diagnostics3DSStop();
+        ExitWithError("DSP audio could not start. Dump DSP firmware with a current homebrew setup, then try again.");
+    }
+
+    Mk64Diagnostics3DSCheckpoint("bottom-ui-init");
+    if (!Mk64BottomUI3DSInit()) {
+        Mk64Diagnostics3DSCheckpoint("bottom-ui-init-failed");
+        Mk64GameAudio3DSShutdown();
+        Mk64Graphics3DSShutdown();
+        Mk64Resource3DSShutdown();
+        Mk64Diagnostics3DSStop();
+        ExitWithError("The bottom-screen interface could not be initialized.");
+    }
+    Mk64Diagnostics3DSCheckpoint("bottom-ui-ready");
+
+    // Skip the desktop-only Harbour Masters splash and enter the stock logo.
+    gMenuSelection = kLogoIntroMenu;
+    Mk64Diagnostics3DSCheckpoint("vanilla-loop-init");
+    thread5_game_loop();
+    Mk64Diagnostics3DSCheckpoint("vanilla-loop-ready");
+
+    uint64_t nextSimulationDeadline = svcGetSystemTick();
+    uint64_t deadlineRemainder = 0;
+    bool suppressNextPresentation = false;
+    while (WindowIsRunning()) {
+        if (Mk64Diagnostics3DSServiceDumpIfRequested()) {
+            nextSimulationDeadline = svcGetSystemTick();
+            deadlineRemainder = 0;
+            suppressNextPresentation = false;
+            continue;
+        }
+        if (Mk64Diagnostics3DSIsPaused()) {
+            Mk64Diagnostics3DSSetStage("diagnostic-dump-paused");
+            svcSleepThread(16000000LL);
+            nextSimulationDeadline = svcGetSystemTick();
+            deadlineRemainder = 0;
+            suppressNextPresentation = false;
+            continue;
+        }
+        Mk64Diagnostics3DSSetStage("game-loop-iteration");
+        Mk64BottomUI3DSPrepareFrame();
+        Mk64Graphics3DSSuppressNextPresentation(suppressNextPresentation);
+        suppressNextPresentation = false;
+        thread5_iteration();
+        // HandleEvents() runs inside the display-list iteration and is where
+        // aptMainLoop() observes HOME -> Close Software. Do not enter the
+        // audio worker wait or frame pacer after that close request.
+        if (!WindowIsRunning()) break;
+        Mk64Diagnostics3DSSetStage("game-loop-audio");
+        Mk64GameAudio3DSPump();
+
+        // Keep the original 30 Hz simulation clock exact. If rendering falls
+        // behind, the following tick may omit only its presentation so logic,
+        // input and audio can recover instead of making the whole game run in
+        // slow motion. Long loading/diagnostic stalls reset the clock rather
+        // than replaying seconds of stale input.
+        nextSimulationDeadline += SYSCLOCK_ARM11 / kSimulationRate;
+        deadlineRemainder += SYSCLOCK_ARM11 % kSimulationRate;
+        if (deadlineRemainder >= kSimulationRate) {
+            ++nextSimulationDeadline;
+            deadlineRemainder -= kSimulationRate;
+        }
+        const uint64_t now = svcGetSystemTick();
+        if (now < nextSimulationDeadline) {
+            const uint64_t remainingTicks = nextSimulationDeadline - now;
+            const int64_t remainingNanoseconds = static_cast<int64_t>(
+                remainingTicks * 1000000000ULL / SYSCLOCK_ARM11);
+            if (remainingNanoseconds > 0) svcSleepThread(remainingNanoseconds);
+        } else {
+            const uint64_t lateness = now - nextSimulationDeadline;
+            const uint64_t tickTicks = SYSCLOCK_ARM11 / kSimulationRate;
+            if (lateness > tickTicks * 3U) {
+                nextSimulationDeadline = now;
+                deadlineRemainder = 0;
+            } else if (lateness >= tickTicks / 2U) {
+                suppressNextPresentation = true;
+            }
+        }
+    }
+
+    // WindowIsRunning becomes false after aptMainLoop reports the HOME-menu
+    // close request. Settings are persisted on every change. Join the audio
+    // and diagnostics workers while NDSP/HID and their stacks are still mapped,
+    // then keep the immediate exit that avoids GPU/resource teardown after
+    // Citro3D has disabled its VBlank callbacks during the APT transition.
+    Mk64Diagnostics3DSCheckpoint("game-loop-exit-requested");
+    Mk64GameAudio3DSShutdown();
+    Mk64Diagnostics3DSStop();
+    std::_Exit(0);
+}
+
+extern "C" void userAppExit() {
+    // libctru invokes this hook before hidExit() unmaps HID shared memory.
+    // Quiesce the audio worker before waiting on the diagnostics HID poller so
+    // it cannot keep using services while process teardown is in progress.
+    Mk64GameAudio3DSAbortForProcessExit();
+    Mk64Diagnostics3DSAbortForProcessExit();
+}

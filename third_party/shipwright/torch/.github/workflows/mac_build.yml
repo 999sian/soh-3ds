@@ -1,0 +1,56 @@
+name: Macos Compile
+
+on:
+  push:
+    branches: [ "*" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  build:
+    runs-on: macOS-latest
+    strategy:
+      matrix:
+        config: [Release, Debug]
+        standalone: [OFF, ON]
+        toolchain: [macos-clang, macos-gnu] # remove temporary macos-clang-llvm
+        isPR:
+          - ${{ github.event_name == 'pull_request' }}
+        exclude:
+          - isPR: true
+            standalone: OFF
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          # Base tools plus the libultraship/Fast3D deps the interactive viewer
+          # (BUILD_UI) needs: SDL2, GLEW, libzip and nlohmann-json. The mac
+          # backend is Metal (metal-cpp is fetched), so no Vulkan is required.
+          brew install cmake ninja xcodes sdl2 glew libzip nlohmann-json
+      - name: Download llvm
+        if: ${{ matrix.toolchain == 'macos-clang-llvm' }}
+        run: |
+          brew install llvm lld
+          echo "/opt/homebrew/opt/llvm/bin" >> $GITHUB_PATH
+      - name: Download gnu
+        if: ${{ matrix.toolchain == 'macos-gnu' }}
+        run: |
+          brew install gcc
+          echo "/opt/homebrew/opt/gcc/bin" >> $GITHUB_PATH
+      - name: Build
+        run: |
+          # Enable the viewer in CI (BUILD_UI is off by default), except on the gcc
+          # toolchain: the Metal backend needs clang/Objective-C++.
+          cmake -H. -Bbuild-cmake -GNinja -DCMAKE_BUILD_TYPE=${{ matrix.config }} -DUSE_STANDALONE=${{ matrix.standalone }} -DBUILD_UI=${{ matrix.toolchain == 'macos-gnu' && 'OFF' || 'ON' }} -DCMAKE_TOOLCHAIN_FILE=cmake/toolchain/${{ matrix.toolchain }}.cmake
+          cmake --build build-cmake -j
+      - name: Create Package
+        if: ${{ matrix.config == 'Release' && matrix.standalone == 'ON' && matrix.toolchain == 'macos-clang' }}
+        run: |
+          mkdir torch-release
+          mv build-cmake/torch torch-release/
+      - name: Publish packaged artifacts
+        if: ${{ matrix.config == 'Release' && matrix.standalone == 'ON' && matrix.toolchain == 'macos-clang' }}
+        uses: actions/upload-artifact@v4
+        with:
+            name: torch-mac-bin
+            path: torch-release

@@ -1,0 +1,113 @@
+#include <spdlog/spdlog.h>
+#include <libultraship/bridge/consolevariablebridge.h>
+
+#include "playthrough.hpp"
+#include "fill.hpp"
+#include "../location_access.h"
+#include "../rng.h"
+#include "spoiler_log.hpp"
+#include "soh/Enhancements/randomizer/settings.h"
+#include "variables.h"
+#include "soh/cvar_prefixes.h"
+#include "../option.h"
+#include "soh/Enhancements/debugger/performanceTimer.h"
+#include "soh/Enhancements/dualscreen3ds/RandomizerMenu3DS.h"
+
+namespace Playthrough {
+
+int Playthrough_Init(uint32_t seed, std::set<RandomizerCheck> excludedLocations,
+                     std::set<RandomizerTrick> enabledTricks) {
+    // initialize the RNG with just the seed in case any settings need to be
+    // resolved to something random
+    Random_Init(seed);
+
+    auto ctx = Rando::Context::GetInstance();
+    ctx->overrides.clear();
+    ctx->ItemReset();
+    ctx->HintReset();
+    ctx->GetLogic()->Reset();
+    StartPerformanceTimer(PT_REGION_RESET);
+    Regions::AccessReset();
+    StopPerformanceTimer(PT_REGION_RESET);
+
+    ctx->FinalizeSettings(excludedLocations, enabledTricks);
+    // once the settings have been finalized turn them into a string for hashing
+    std::string settingsStr;
+    auto& optionGroups = Rando::Settings::GetInstance()->GetOptionGroups();
+    for (size_t i = 0; i < RSG_MAX; i++) {
+        auto& optionGroup = optionGroups[i];
+        // don't go through non-menus
+        if (optionGroup.GetContainsType() == Rando::OptionGroupType::SUBGROUP) {
+            continue;
+        }
+
+        for (Rando::Option* option : optionGroup.GetOptions()) {
+            if (option->IsCategory(Rando::OptionCategory::Setting)) {
+                if (option->GetOptionCount() > 0) {
+                    if (i >= RSG_EXCLUDES_KOKIRI_FOREST && i <= RSG_EXCLUDES_GANONS_CASTLE) {
+                        auto locationOption = static_cast<Rando::LocationOption*>(option);
+                        settingsStr += option->GetOptionText(ctx->GetLocationOption(locationOption->GetKey()).Get());
+                    } else if (i == RSG_TRICKS) {
+                        auto trickOption = static_cast<Rando::TrickSetting*>(option);
+                        settingsStr += option->GetOptionText(ctx->GetTrickOption(trickOption->GetKey()).Get());
+                    } else {
+                        settingsStr += option->GetOptionText(ctx->GetOption(option->GetKey()).Get());
+                    }
+                }
+            }
+        }
+    }
+
+    if (CVarGetInteger(CVAR_RANDOMIZER_SETTING("DontGenerateSpoiler"), 0)) {
+        settingsStr += (char*)gBuildVersion;
+    }
+
+    uint32_t finalHash = SohUtils::Hash(std::to_string(ctx->GetSeed()) + settingsStr);
+    Random_Init(finalHash);
+    ctx->SetHash(std::to_string(finalHash));
+
+    int ret = Fill();
+    if (ret < 0) {
+        return ret;
+    }
+
+    GenerateHash();
+
+    // TODO: Handle different types of file output (Spoiler Log, Plando Template, Patch Files, Race Files, etc.)
+    SPDLOG_INFO("Writing Spoiler Log...");
+    Soh3dsRandoProgress_SetStage(SOH3DS_RANDO_STAGE_WRITING_LOG);
+    StartPerformanceTimer(PT_SPOILER_LOG);
+    SpoilerLog_Write();
+    StopPerformanceTimer(PT_SPOILER_LOG);
+    SPDLOG_INFO("Writing Spoiler Log Done");
+
+    ctx->playthroughLocations.clear();
+    ctx->playthroughBeatable = false;
+
+    return 1;
+}
+
+// used for generating a lot of seeds at once
+int Playthrough_Repeat(std::set<RandomizerCheck> excludedLocations, std::set<RandomizerTrick> enabledTricks,
+                       int count /*= 1*/) {
+    SPDLOG_INFO("GENERATING {} SEEDS", count);
+    auto ctx = Rando::Context::GetInstance();
+    uint32_t repeatedSeed = 0;
+    for (int i = 0; i < count; i++) {
+        char seedString[11];
+        for (size_t i = 0; i < 10; i++) {
+            seedString[i] = '0' + ShipUtils::Random(0, 10);
+        }
+        seedString[10] = '\0';
+        ctx->SetSeedString(std::string(seedString));
+        repeatedSeed = SohUtils::Hash(ctx->GetSeedString());
+        ctx->SetSeed(repeatedSeed);
+        SPDLOG_DEBUG("testing seed: %d", repeatedSeed);
+        ClearProgress();
+        Playthrough_Init(ctx->GetSeed(), excludedLocations, enabledTricks);
+        SPDLOG_INFO("Seeds Generated: {}", i + 1);
+    }
+
+    return 1;
+}
+} // namespace Playthrough

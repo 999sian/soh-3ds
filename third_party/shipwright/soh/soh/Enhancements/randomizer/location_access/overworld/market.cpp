@@ -1,0 +1,260 @@
+#include "soh/Enhancements/randomizer/location_access.h"
+#include "soh/Enhancements/randomizer/entrance.h"
+
+using namespace Rando;
+
+void RegionTable_Init_Market() {
+    // clang-format off
+    areaTable[RR_MARKET_ENTRANCE] = Region("Market Entrance", SCENE_MARKET_ENTRANCE_DAY, {}, {}, {
+        //Exits
+        ENTRANCE(RR_HYRULE_FIELD,       logic->IsAdult || logic->AtDay),
+        ENTRANCE(RR_THE_MARKET,         true),
+        ENTRANCE(RR_MARKET_GUARD_HOUSE, logic->HasItem(RG_GUARD_HOUSE_KEY)),
+    });
+
+    areaTable[RR_THE_MARKET] = Region("Market", SCENE_MARKET_DAY, {}, {
+        //Locations
+        //RANDOTODO add item avalibility to regions to remove need to hardcode logic in limited item use situations
+        LOCATION(RC_MARKET_GRASS_1,              logic->IsChild && logic->CanCutShrubs()),
+        LOCATION(RC_MARKET_GRASS_2,              logic->IsChild && logic->CanCutShrubs()),
+        LOCATION(RC_MARKET_GRASS_3,              logic->IsChild && logic->CanCutShrubs()),
+        LOCATION(RC_MARKET_GRASS_4,              logic->IsChild && logic->CanCutShrubs()),
+        LOCATION(RC_MARKET_GRASS_5,              logic->IsChild && logic->CanCutShrubs()),
+        LOCATION(RC_MARKET_GRASS_6,              logic->IsChild && logic->CanCutShrubs()),
+        LOCATION(RC_MARKET_GRASS_7,              logic->IsChild && logic->CanCutShrubs()),
+        LOCATION(RC_MARKET_GRASS_8,              logic->IsChild && logic->CanCutShrubs()),
+        LOCATION(RC_MK_NEAR_BAZAAR_CRATE_1,      logic->IsChild && logic->CanBreakCrates()),
+        LOCATION(RC_MK_NEAR_BAZAAR_CRATE_2,      logic->IsChild && logic->CanBreakCrates()),
+        LOCATION(RC_MK_SHOOTING_GALLERY_CRATE_1, logic->IsChild && logic->CanBreakCrates()),
+        LOCATION(RC_MK_SHOOTING_GALLERY_CRATE_2, logic->IsChild && logic->CanBreakCrates()),
+        LOCATION(RC_MARKET_TREE,                 logic->IsChild && logic->CanBonkTrees()),
+        LOCATION(RC_MKT_WONDER_DAY_1,            logic->IsChild && logic->AtDay),
+        LOCATION(RC_MKT_WONDER_DAY_2,            logic->IsChild && logic->AtDay),
+        LOCATION(RC_MKT_WONDER_DAY_3,            logic->IsChild && logic->AtDay),
+        LOCATION(RC_MKT_WONDER_DAY_4,            logic->IsChild && logic->AtDay),
+        LOCATION(RC_MKT_WONDER_DAY_5,            logic->IsChild && logic->AtDay),
+        LOCATION(RC_MKT_WONDER_NIGHT_1,          logic->IsChild && logic->AtNight),
+        LOCATION(RC_MKT_WONDER_NIGHT_2,          logic->IsChild && logic->AtNight),
+        LOCATION(RC_MK_BEGGAR_BUGS,              logic->IsChild && logic->AtDay && logic->CanUse(RG_BOTTLE_WITH_BUGS)),
+        LOCATION(RC_MK_BEGGAR_FISH,              logic->IsChild && logic->AtDay && logic->CanUse(RG_BOTTLE_WITH_FISH)),
+        LOCATION(RC_MK_BEGGAR_BLUE_FIRE,         logic->IsChild && logic->AtDay && logic->CanUse(RG_BOTTLE_WITH_BLUE_FIRE)),
+    }, {
+        //Exits
+        ENTRANCE(RR_MARKET_ENTRANCE,            true),
+        ENTRANCE(RR_TOT_ENTRANCE,               true),
+        ENTRANCE(RR_CASTLE_GROUNDS,             true),
+        ENTRANCE(RR_MARKET_BAZAAR,              logic->IsChild && logic->AtDay && logic->HasItem(RG_MARKET_BAZAAR_KEY)),
+        ENTRANCE(RR_MARKET_MASK_SHOP,           logic->IsChild && logic->AtDay && logic->HasItem(RG_MASK_SHOP_KEY)),
+        ENTRANCE(RR_MARKET_SHOOTING_GALLERY,    logic->IsChild && logic->AtDay && logic->HasItem(RG_MARKET_SHOOTING_GALLERY_KEY)),
+        ENTRANCE(RR_MARKET_BOMBCHU_BOWLING,     logic->IsChild && logic->HasItem(RG_BOMBCHU_BOWLING_KEY)),
+        ENTRANCE(RR_MARKET_TREASURE_CHEST_GAME, logic->IsChild && logic->AtNight && logic->HasItem(RG_TREASURE_CHEST_GAME_BUILDING_KEY)),
+        ENTRANCE(RR_MARKET_POTION_SHOP,         logic->IsChild && logic->AtDay && logic->HasItem(RG_MARKET_POTION_SHOP_KEY)),
+        ENTRANCE(RR_MARKET_BACK_ALLEY,          logic->IsChild),
+    });
+
+    areaTable[RR_MARKET_BACK_ALLEY] = Region("Market Back Alley", SCENE_BACK_ALLEY_DAY, {}, {}, {
+        //Exits
+        ENTRANCE(RR_THE_MARKET,                true),
+        ENTRANCE(RR_MARKET_BOMBCHU_SHOP,       logic->AtNight && logic->HasItem(RG_BOMBCHU_SHOP_KEY)),
+        ENTRANCE(RR_MARKET_DOG_LADY_HOUSE,     logic->HasItem(RG_RICHARDS_HOUSE_KEY)),
+        ENTRANCE(RR_MARKET_MAN_IN_GREEN_HOUSE, logic->AtNight && logic->HasItem(RG_ALLEY_HOUSE_KEY)),
+    });
+
+    areaTable[RR_MARKET_GUARD_HOUSE] = Region("Market Guard House", SCENE_MARKET_GUARD_HOUSE, {
+        //Events
+        EVENT_ACCESS(LOGIC_CAN_EMPTY_BIG_POES, logic->IsAdult),
+    }, {
+        //Locations
+        LOCATION(RC_MARKET_10_BIG_POES,          logic->IsAdult && logic->HasItem(RG_SPEAK_HYLIAN) && (logic->Get(LOGIC_BIG_POE_KILL) || logic->BigPoes >= ctx->GetOption(RSK_BIG_POE_COUNT).Get())),
+        LOCATION(RC_MARKET_GS_GUARD_HOUSE,       logic->IsChild && logic->CanBreakCrates() && (logic->HasItem(RG_POWER_BRACELET) || logic->CanKillEnemy(RE_GOLD_SKULLTULA))),
+        LOCATION(RC_MK_GUARD_HOUSE_CHILD_POT_1,  logic->IsChild && logic->CanBreakPots()),
+        LOCATION(RC_MK_GUARD_HOUSE_CHILD_POT_2,  logic->IsChild && logic->CanBreakPots()),
+        LOCATION(RC_MK_GUARD_HOUSE_CHILD_POT_3,  logic->IsChild && logic->CanBreakPots()),
+        LOCATION(RC_MK_GUARD_HOUSE_CHILD_POT_4,  logic->IsChild && logic->CanBreakPots()),
+        LOCATION(RC_MK_GUARD_HOUSE_CHILD_POT_5,  logic->IsChild && logic->CanBreakPots()),
+        LOCATION(RC_MK_GUARD_HOUSE_CHILD_POT_6,  logic->IsChild && logic->CanBreakPots()),
+        LOCATION(RC_MK_GUARD_HOUSE_CHILD_POT_7,  logic->IsChild && logic->CanBreakPots()),
+        LOCATION(RC_MK_GUARD_HOUSE_CHILD_POT_8,  logic->IsChild && logic->CanBreakPots()),
+        LOCATION(RC_MK_GUARD_HOUSE_CHILD_POT_9,  logic->IsChild && logic->CanBreakPots()),
+        LOCATION(RC_MK_GUARD_HOUSE_CHILD_POT_10, logic->IsChild && logic->CanBreakPots()),
+        LOCATION(RC_MK_GUARD_HOUSE_CHILD_POT_11, logic->IsChild && logic->CanBreakPots()),
+        LOCATION(RC_MK_GUARD_HOUSE_CHILD_POT_12, logic->IsChild && logic->CanBreakPots()),
+        LOCATION(RC_MK_GUARD_HOUSE_CHILD_POT_13, logic->IsChild && logic->CanBreakPots()),
+        LOCATION(RC_MK_GUARD_HOUSE_CHILD_POT_14, logic->IsChild && logic->CanBreakPots()),
+        LOCATION(RC_MK_GUARD_HOUSE_CHILD_POT_15, logic->IsChild && logic->CanBreakPots()),
+        LOCATION(RC_MK_GUARD_HOUSE_CHILD_POT_16, logic->IsChild && logic->CanBreakPots()),
+        LOCATION(RC_MK_GUARD_HOUSE_CHILD_POT_17, logic->IsChild && logic->CanBreakPots()),
+        LOCATION(RC_MK_GUARD_HOUSE_CHILD_POT_18, logic->IsChild && logic->CanBreakPots()),
+        LOCATION(RC_MK_GUARD_HOUSE_CHILD_POT_19, logic->IsChild && logic->CanBreakPots()),
+        LOCATION(RC_MK_GUARD_HOUSE_CHILD_POT_20, logic->IsChild && logic->CanBreakPots()),
+        LOCATION(RC_MK_GUARD_HOUSE_CHILD_POT_21, logic->IsChild && logic->CanBreakPots()),
+        LOCATION(RC_MK_GUARD_HOUSE_CHILD_POT_22, logic->IsChild && logic->CanBreakPots()),
+        LOCATION(RC_MK_GUARD_HOUSE_CHILD_POT_23, logic->IsChild && logic->CanBreakPots()),
+        LOCATION(RC_MK_GUARD_HOUSE_CHILD_POT_24, logic->IsChild && logic->CanBreakPots()),
+        LOCATION(RC_MK_GUARD_HOUSE_CHILD_POT_25, logic->IsChild && logic->CanBreakPots()),
+        LOCATION(RC_MK_GUARD_HOUSE_CHILD_POT_26, logic->IsChild && logic->CanBreakPots()),
+        LOCATION(RC_MK_GUARD_HOUSE_CHILD_POT_27, logic->IsChild && logic->CanBreakPots()),
+        LOCATION(RC_MK_GUARD_HOUSE_CHILD_POT_28, logic->IsChild && logic->CanBreakPots()),
+        LOCATION(RC_MK_GUARD_HOUSE_CHILD_POT_29, logic->IsChild && logic->CanBreakPots()),
+        LOCATION(RC_MK_GUARD_HOUSE_CHILD_POT_30, logic->IsChild && logic->CanBreakPots()),
+        LOCATION(RC_MK_GUARD_HOUSE_CHILD_POT_31, logic->IsChild && logic->CanBreakPots()),
+        LOCATION(RC_MK_GUARD_HOUSE_CHILD_POT_32, logic->IsChild && logic->CanBreakPots()),
+        LOCATION(RC_MK_GUARD_HOUSE_CHILD_POT_33, logic->IsChild && logic->CanBreakPots()),
+        LOCATION(RC_MK_GUARD_HOUSE_CHILD_POT_34, logic->IsChild && logic->CanBreakPots()),
+        LOCATION(RC_MK_GUARD_HOUSE_CHILD_POT_35, logic->IsChild && logic->CanBreakPots()),
+        LOCATION(RC_MK_GUARD_HOUSE_CHILD_POT_36, logic->IsChild && logic->CanBreakPots()),
+        LOCATION(RC_MK_GUARD_HOUSE_CHILD_POT_37, logic->IsChild && logic->CanBreakPots()),
+        LOCATION(RC_MK_GUARD_HOUSE_CHILD_POT_38, logic->IsChild && logic->CanBreakPots()),
+        LOCATION(RC_MK_GUARD_HOUSE_CHILD_POT_39, logic->IsChild && logic->CanBreakPots()),
+        LOCATION(RC_MK_GUARD_HOUSE_CHILD_POT_40, logic->IsChild && logic->CanBreakPots()),
+        LOCATION(RC_MK_GUARD_HOUSE_CHILD_POT_41, logic->IsChild && logic->CanBreakPots()),
+        LOCATION(RC_MK_GUARD_HOUSE_CHILD_POT_42, logic->IsChild && logic->CanBreakPots()),
+        LOCATION(RC_MK_GUARD_HOUSE_CHILD_POT_43, logic->IsChild && logic->CanBreakPots()),
+        LOCATION(RC_MK_GUARD_HOUSE_CHILD_POT_44, logic->IsChild && logic->CanBreakPots()),
+        LOCATION(RC_MK_GUARD_HOUSE_ADULT_POT_1,  logic->IsAdult && logic->CanBreakPots()),
+        LOCATION(RC_MK_GUARD_HOUSE_ADULT_POT_2,  logic->IsAdult && logic->CanBreakPots()),
+        LOCATION(RC_MK_GUARD_HOUSE_ADULT_POT_3,  logic->IsAdult && logic->CanBreakPots()),
+        LOCATION(RC_MK_GUARD_HOUSE_ADULT_POT_4,  logic->IsAdult && logic->CanBreakPots()),
+        LOCATION(RC_MK_GUARD_HOUSE_ADULT_POT_5,  logic->IsAdult && logic->CanBreakPots()),
+        LOCATION(RC_MK_GUARD_HOUSE_ADULT_POT_6,  logic->IsAdult && logic->CanBreakPots()),
+        LOCATION(RC_MK_GUARD_HOUSE_ADULT_POT_7,  logic->IsAdult && logic->CanBreakPots()),
+        LOCATION(RC_MK_GUARD_HOUSE_ADULT_POT_8,  logic->IsAdult && logic->CanBreakPots()),
+        LOCATION(RC_MK_GUARD_HOUSE_ADULT_POT_9,  logic->IsAdult && logic->CanBreakPots()),
+        LOCATION(RC_MK_GUARD_HOUSE_ADULT_POT_10, logic->IsAdult && logic->CanBreakPots()),
+        LOCATION(RC_MK_GUARD_HOUSE_ADULT_POT_11, logic->IsAdult && logic->CanBreakPots()),
+        LOCATION(RC_MK_GUARD_HOUSE_CRATE_1,      logic->IsChild && logic->CanBreakCrates()),
+        LOCATION(RC_MK_GUARD_HOUSE_CRATE_2,      logic->IsChild && logic->CanBreakCrates()),
+        LOCATION(RC_MK_GUARD_HOUSE_CRATE_3,      logic->IsChild && logic->CanBreakCrates()),
+        LOCATION(RC_MK_GUARD_HOUSE_CRATE_4,      logic->IsChild && logic->CanBreakCrates()),
+        LOCATION(RC_MK_GUARD_HOUSE_CRATE_5,      logic->IsChild && logic->CanBreakCrates()),
+    }, {
+        //Exits
+        ENTRANCE(RR_MARKET_ENTRANCE, true),
+    });
+
+    areaTable[RR_MARKET_BAZAAR] = Region("Market Bazaar", SCENE_BAZAAR, {}, {
+        //Locations
+        LOCATION(RC_MARKET_BAZAAR_ITEM_1, logic->HasItem(RG_SPEAK_HYLIAN) && GetCheckPrice() <= GetWalletCapacity()),
+        LOCATION(RC_MARKET_BAZAAR_ITEM_2, logic->HasItem(RG_SPEAK_HYLIAN) && GetCheckPrice() <= GetWalletCapacity()),
+        LOCATION(RC_MARKET_BAZAAR_ITEM_3, logic->HasItem(RG_SPEAK_HYLIAN) && GetCheckPrice() <= GetWalletCapacity()),
+        LOCATION(RC_MARKET_BAZAAR_ITEM_4, logic->HasItem(RG_SPEAK_HYLIAN) && GetCheckPrice() <= GetWalletCapacity()),
+        LOCATION(RC_MARKET_BAZAAR_ITEM_5, logic->HasItem(RG_SPEAK_HYLIAN) && GetCheckPrice() <= GetWalletCapacity()),
+        LOCATION(RC_MARKET_BAZAAR_ITEM_6, logic->HasItem(RG_SPEAK_HYLIAN) && GetCheckPrice() <= GetWalletCapacity()),
+        LOCATION(RC_MARKET_BAZAAR_ITEM_7, logic->HasItem(RG_SPEAK_HYLIAN) && GetCheckPrice() <= GetWalletCapacity()),
+        LOCATION(RC_MARKET_BAZAAR_ITEM_8, logic->HasItem(RG_SPEAK_HYLIAN) && GetCheckPrice() <= GetWalletCapacity()),
+    }, {
+        //Exits
+        ENTRANCE(RR_THE_MARKET, true),
+    });
+
+    areaTable[RR_MARKET_MASK_SHOP] = Region("Market Mask Shop", SCENE_HAPPY_MASK_SHOP, {
+        //Events
+        //Currently, mask swap in menu doesn't need access to the mask shop
+        //If it is forced on/a setting, a copy of these events should be added to root
+        //it also doesn't need you to open kak gate, but that might be best treated as a bug
+        EVENT_ACCESS(LOGIC_CAN_BORROW_MASKS,   logic->HasItem(RG_SPEAK_HYLIAN) && logic->Get(LOGIC_KAKARIKO_GATE_OPEN)),
+        EVENT_ACCESS(LOGIC_BORROW_SKULL_MASK,  ctx->GetOption(RSK_MASK_QUEST).Is(RO_MASK_QUEST_COMPLETED) && logic->HasItem(RG_SPEAK_HYLIAN) && logic->Get(LOGIC_CAN_BORROW_MASKS)),
+        EVENT_ACCESS(LOGIC_BORROW_SPOOKY_MASK, ctx->GetOption(RSK_MASK_QUEST).Is(RO_MASK_QUEST_COMPLETED) && logic->HasItem(RG_SPEAK_HYLIAN) && logic->Get(LOGIC_CAN_BORROW_MASKS)),
+        EVENT_ACCESS(LOGIC_BORROW_BUNNY_HOOD,  ctx->GetOption(RSK_MASK_QUEST).Is(RO_MASK_QUEST_COMPLETED) && logic->HasItem(RG_SPEAK_HYLIAN) && logic->Get(LOGIC_CAN_BORROW_MASKS)),
+        EVENT_ACCESS(LOGIC_BORROW_RIGHT_MASKS, ctx->GetOption(RSK_MASK_QUEST).Is(RO_MASK_QUEST_COMPLETED) && logic->HasItem(RG_SPEAK_HYLIAN) && logic->Get(LOGIC_CAN_BORROW_MASKS)),
+    }, {
+        //Locations
+        LOCATION(RC_MASK_SHOP_HINT,    true),
+        LOCATION(RC_MK_MASK_SHOP_SIGN, logic->CanRead()),
+    }, {
+        //Exits
+        ENTRANCE(RR_THE_MARKET, true),
+    });
+
+    areaTable[RR_MARKET_SHOOTING_GALLERY] = Region("Market Shooting Gallery", SCENE_SHOOTING_GALLERY, {}, {
+        //Locations
+        LOCATION(RC_MARKET_SHOOTING_GALLERY_REWARD,     logic->IsChild && logic->HasItem(RG_CHILD_WALLET) && logic->HasItem(RG_SPEAK_HYLIAN)),
+        LOCATION(RC_MK_SHOOTING_GALLERY_RECTANGLE_SIGN, logic->IsChild && logic->CanRead()),
+    }, {
+        //Exits
+        ENTRANCE(RR_THE_MARKET, true),
+    });
+
+    areaTable[RR_MARKET_BOMBCHU_BOWLING] = Region("Market Bombchu Bowling", SCENE_BOMBCHU_BOWLING_ALLEY, {
+        //Events
+        EVENT_ACCESS(LOGIC_COULD_PLAY_BOWLING, logic->HasItem(RG_CHILD_WALLET) && logic->HasItem(RG_SPEAK_HYLIAN)),
+    }, {
+        //Locations
+        LOCATION(RC_MARKET_BOMBCHU_BOWLING_FIRST_PRIZE,  logic->Get(LOGIC_COULD_PLAY_BOWLING) && logic->BombchusEnabled()),
+        LOCATION(RC_MARKET_BOMBCHU_BOWLING_SECOND_PRIZE, logic->Get(LOGIC_COULD_PLAY_BOWLING) && logic->BombchusEnabled()),
+    }, {
+        //Exits
+        ENTRANCE(RR_THE_MARKET, true),
+    });
+
+    areaTable[RR_MARKET_POTION_SHOP] = Region("Market Potion Shop", SCENE_POTION_SHOP_MARKET, {}, {
+        //Locations
+        LOCATION(RC_MARKET_POTION_SHOP_ITEM_1, logic->HasItem(RG_SPEAK_HYLIAN) && GetCheckPrice() <= GetWalletCapacity()),
+        LOCATION(RC_MARKET_POTION_SHOP_ITEM_2, logic->HasItem(RG_SPEAK_HYLIAN) && GetCheckPrice() <= GetWalletCapacity()),
+        LOCATION(RC_MARKET_POTION_SHOP_ITEM_3, logic->HasItem(RG_SPEAK_HYLIAN) && GetCheckPrice() <= GetWalletCapacity()),
+        LOCATION(RC_MARKET_POTION_SHOP_ITEM_4, logic->HasItem(RG_SPEAK_HYLIAN) && GetCheckPrice() <= GetWalletCapacity()),
+        LOCATION(RC_MARKET_POTION_SHOP_ITEM_5, logic->HasItem(RG_SPEAK_HYLIAN) && GetCheckPrice() <= GetWalletCapacity()),
+        LOCATION(RC_MARKET_POTION_SHOP_ITEM_6, logic->HasItem(RG_SPEAK_HYLIAN) && GetCheckPrice() <= GetWalletCapacity()),
+        LOCATION(RC_MARKET_POTION_SHOP_ITEM_7, logic->HasItem(RG_SPEAK_HYLIAN) && GetCheckPrice() <= GetWalletCapacity()),
+        LOCATION(RC_MARKET_POTION_SHOP_ITEM_8, logic->HasItem(RG_SPEAK_HYLIAN) && GetCheckPrice() <= GetWalletCapacity()),
+    }, {
+        //Exits
+        ENTRANCE(RR_THE_MARKET, true),
+    });
+
+    areaTable[RR_MARKET_TREASURE_CHEST_GAME] = Region("Market Treasure Chest Game", SCENE_TREASURE_BOX_SHOP, {}, {
+        //Locations
+        LOCATION(RC_GREG_HINT,                         logic->HasItem(RG_CHILD_WALLET) && logic->HasItem(RG_SPEAK_HYLIAN)),
+        LOCATION(RC_MARKET_TREASURE_CHEST_GAME_SHOPKEEPER, logic->HasItem(RG_CHILD_WALLET) && logic->HasItem(RG_SPEAK_HYLIAN) && ctx->GetOption(RSK_SHUFFLE_CHEST_MINIGAME)),
+        LOCATION(RC_MARKET_TREASURE_CHEST_GAME_KEY_1,  logic->CanOpenLargeChest() && (ctx->GetOption(RSK_SHUFFLE_CHEST_MINIGAME) ? logic->SmallKeys(SCENE_TREASURE_BOX_SHOP, 1) : (logic->HasItem(RG_CHILD_WALLET) && logic->HasItem(RG_SPEAK_HYLIAN) && logic->CanUse(RG_LENS_OF_TRUTH)))),
+        LOCATION(RC_MARKET_TREASURE_CHEST_GAME_ITEM_1, logic->CanOpenLargeChest() && (ctx->GetOption(RSK_SHUFFLE_CHEST_MINIGAME) ? logic->SmallKeys(SCENE_TREASURE_BOX_SHOP, 1) : (logic->HasItem(RG_CHILD_WALLET) && logic->HasItem(RG_SPEAK_HYLIAN) && logic->CanUse(RG_LENS_OF_TRUTH)))),
+        LOCATION(RC_MARKET_TREASURE_CHEST_GAME_KEY_2,  logic->CanOpenLargeChest() && (ctx->GetOption(RSK_SHUFFLE_CHEST_MINIGAME) ? logic->SmallKeys(SCENE_TREASURE_BOX_SHOP, 2) : (logic->HasItem(RG_CHILD_WALLET) && logic->HasItem(RG_SPEAK_HYLIAN) && logic->CanUse(RG_LENS_OF_TRUTH)))),
+        LOCATION(RC_MARKET_TREASURE_CHEST_GAME_ITEM_2, logic->CanOpenLargeChest() && (ctx->GetOption(RSK_SHUFFLE_CHEST_MINIGAME) ? logic->SmallKeys(SCENE_TREASURE_BOX_SHOP, 2) : (logic->HasItem(RG_CHILD_WALLET) && logic->HasItem(RG_SPEAK_HYLIAN) && logic->CanUse(RG_LENS_OF_TRUTH)))),
+        LOCATION(RC_MARKET_TREASURE_CHEST_GAME_KEY_3,  logic->CanOpenLargeChest() && (ctx->GetOption(RSK_SHUFFLE_CHEST_MINIGAME) ? logic->SmallKeys(SCENE_TREASURE_BOX_SHOP, 3) : (logic->HasItem(RG_CHILD_WALLET) && logic->HasItem(RG_SPEAK_HYLIAN) && logic->CanUse(RG_LENS_OF_TRUTH)))),
+        LOCATION(RC_MARKET_TREASURE_CHEST_GAME_ITEM_3, logic->CanOpenLargeChest() && (ctx->GetOption(RSK_SHUFFLE_CHEST_MINIGAME) ? logic->SmallKeys(SCENE_TREASURE_BOX_SHOP, 3) : (logic->HasItem(RG_CHILD_WALLET) && logic->HasItem(RG_SPEAK_HYLIAN) && logic->CanUse(RG_LENS_OF_TRUTH)))),
+        LOCATION(RC_MARKET_TREASURE_CHEST_GAME_KEY_4,  logic->CanOpenLargeChest() && (ctx->GetOption(RSK_SHUFFLE_CHEST_MINIGAME) ? logic->SmallKeys(SCENE_TREASURE_BOX_SHOP, 4) : (logic->HasItem(RG_CHILD_WALLET) && logic->HasItem(RG_SPEAK_HYLIAN) && logic->CanUse(RG_LENS_OF_TRUTH)))),
+        LOCATION(RC_MARKET_TREASURE_CHEST_GAME_ITEM_4, logic->CanOpenLargeChest() && (ctx->GetOption(RSK_SHUFFLE_CHEST_MINIGAME) ? logic->SmallKeys(SCENE_TREASURE_BOX_SHOP, 4) : (logic->HasItem(RG_CHILD_WALLET) && logic->HasItem(RG_SPEAK_HYLIAN) && logic->CanUse(RG_LENS_OF_TRUTH)))),
+        LOCATION(RC_MARKET_TREASURE_CHEST_GAME_KEY_5,  logic->CanOpenLargeChest() && (ctx->GetOption(RSK_SHUFFLE_CHEST_MINIGAME) ? logic->SmallKeys(SCENE_TREASURE_BOX_SHOP, 5) : (logic->HasItem(RG_CHILD_WALLET) && logic->HasItem(RG_SPEAK_HYLIAN) && logic->CanUse(RG_LENS_OF_TRUTH)))),
+        LOCATION(RC_MARKET_TREASURE_CHEST_GAME_ITEM_5, logic->CanOpenLargeChest() && (ctx->GetOption(RSK_SHUFFLE_CHEST_MINIGAME) ? logic->SmallKeys(SCENE_TREASURE_BOX_SHOP, 5) : (logic->HasItem(RG_CHILD_WALLET) && logic->HasItem(RG_SPEAK_HYLIAN) && logic->CanUse(RG_LENS_OF_TRUTH)))),
+        LOCATION(RC_MARKET_TREASURE_CHEST_GAME_REWARD, logic->CanOpenLargeChest() && (ctx->GetOption(RSK_SHUFFLE_CHEST_MINIGAME) ? logic->SmallKeys(SCENE_TREASURE_BOX_SHOP, 6) : (logic->HasItem(RG_CHILD_WALLET) && logic->HasItem(RG_SPEAK_HYLIAN) && logic->CanUse(RG_LENS_OF_TRUTH)))),
+    }, {
+        //Exits
+        ENTRANCE(RR_THE_MARKET, true),
+    });
+
+    areaTable[RR_MARKET_BOMBCHU_SHOP] = Region("Market Bombchu Shop", SCENE_BOMBCHU_SHOP, {}, {
+        //Locations
+        LOCATION(RC_MARKET_BOMBCHU_SHOP_ITEM_1, logic->HasItem(RG_SPEAK_HYLIAN) && GetCheckPrice() <= GetWalletCapacity()),
+        LOCATION(RC_MARKET_BOMBCHU_SHOP_ITEM_2, logic->HasItem(RG_SPEAK_HYLIAN) && GetCheckPrice() <= GetWalletCapacity()),
+        LOCATION(RC_MARKET_BOMBCHU_SHOP_ITEM_3, logic->HasItem(RG_SPEAK_HYLIAN) && GetCheckPrice() <= GetWalletCapacity()),
+        LOCATION(RC_MARKET_BOMBCHU_SHOP_ITEM_4, logic->HasItem(RG_SPEAK_HYLIAN) && GetCheckPrice() <= GetWalletCapacity()),
+        LOCATION(RC_MARKET_BOMBCHU_SHOP_ITEM_5, logic->HasItem(RG_SPEAK_HYLIAN) && GetCheckPrice() <= GetWalletCapacity()),
+        LOCATION(RC_MARKET_BOMBCHU_SHOP_ITEM_6, logic->HasItem(RG_SPEAK_HYLIAN) && GetCheckPrice() <= GetWalletCapacity()),
+        LOCATION(RC_MARKET_BOMBCHU_SHOP_ITEM_7, logic->HasItem(RG_SPEAK_HYLIAN) && GetCheckPrice() <= GetWalletCapacity()),
+        LOCATION(RC_MARKET_BOMBCHU_SHOP_ITEM_8, logic->HasItem(RG_SPEAK_HYLIAN) && GetCheckPrice() <= GetWalletCapacity()),
+    }, {
+        //Exits
+        ENTRANCE(RR_MARKET_BACK_ALLEY, true),
+    });
+
+    areaTable[RR_MARKET_DOG_LADY_HOUSE] = Region("Market Dog Lady House", SCENE_DOG_LADY_HOUSE, {}, {
+        //Locations
+        LOCATION(RC_MARKET_LOST_DOG,         logic->IsChild && logic->AtNight && logic->HasItem(RG_SPEAK_HYLIAN)),
+        LOCATION(RC_MK_LOST_DOG_HOUSE_CRATE, logic->CanBreakCrates()),
+    }, {
+        //Exits
+        ENTRANCE(RR_MARKET_BACK_ALLEY, true),
+    });
+
+    areaTable[RR_MARKET_MAN_IN_GREEN_HOUSE] = Region("Market Man in Green House", SCENE_BACK_ALLEY_HOUSE, {}, {
+        // Locations
+        LOCATION(RC_MK_BACK_ALLEY_HOUSE_POT_1, logic->CanBreakPots()),
+        LOCATION(RC_MK_BACK_ALLEY_HOUSE_POT_2, logic->CanBreakPots()),
+        LOCATION(RC_MK_BACK_ALLEY_HOUSE_POT_3, logic->CanBreakPots()),
+    }, {
+        //Exits
+        ENTRANCE(RR_MARKET_BACK_ALLEY, true),
+    });
+
+    // clang-format on
+}

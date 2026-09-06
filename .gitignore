@@ -1,0 +1,45 @@
+# Local documentation and development evidence
+/docs/
+
+# Build trees, caches and generated packages (including vendored builds)
+build/
+build-*/
+builds/
+cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+Testing/
+_deps/
+*.o
+*.a
+*.so
+*.elf
+*.3dsx
+*.cia
+*.cxi
+*.shbin
+*.map
+*.log
+
+# User-supplied ROMs, extracted game archives and saves
+*.z64
+*.n64
+*.v64
+*.otr
+*.o2r
+*.sav
+*.srm
+
+# Local configuration and tools
+.env
+.env.*
+!.env.example
+__pycache__/
+*.py[cod]
+.venv/
+.DS_Store
+*~
+
+# Nested repository metadata; dependencies are stored as source snapshots
+.git
+.gitmodules

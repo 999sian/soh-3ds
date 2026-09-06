@@ -1,0 +1,55 @@
+#include "soh/Enhancements/randomizer/location_access.h"
+#include "soh/Enhancements/randomizer/entrance.h"
+
+using namespace Rando;
+
+void RegionTable_Init_TempleOfTime() {
+    // clang-format off
+    areaTable[RR_TOT_ENTRANCE] = Region("ToT Entrance", SCENE_TEMPLE_OF_TIME_EXTERIOR_DAY, {
+        //Events
+        EVENT_ACCESS(LOGIC_FAIRY_ACCESS, logic->CallGossipFairyExceptSuns()),
+    }, {
+        //Locations
+        LOCATION(RC_TOT_LEFTMOST_GOSSIP_STONE_FAIRY,         logic->CallGossipFairyExceptSuns() || (logic->CanUse(RG_SUNS_SONG) && logic->IsAdult)),
+        LOCATION(RC_TOT_LEFTMOST_GOSSIP_STONE_FAIRY_BIG,     logic->CanUse(RG_SONG_OF_STORMS)),
+        LOCATION(RC_TOT_LEFT_CENTER_GOSSIP_STONE_FAIRY,      logic->CallGossipFairyExceptSuns() || (logic->CanUse(RG_SUNS_SONG) && logic->IsAdult)),
+        LOCATION(RC_TOT_LEFT_CENTER_GOSSIP_STONE_FAIRY_BIG,  logic->CanUse(RG_SONG_OF_STORMS)),
+        LOCATION(RC_TOT_RIGHT_CENTER_GOSSIP_STONE_FAIRY,     logic->CallGossipFairyExceptSuns() || (logic->CanUse(RG_SUNS_SONG) && logic->IsAdult)),
+        LOCATION(RC_TOT_RIGHT_CENTER_GOSSIP_STONE_FAIRY_BIG, logic->CanUse(RG_SONG_OF_STORMS)),
+        LOCATION(RC_TOT_RIGHTMOST_GOSSIP_STONE_FAIRY,        logic->CallGossipFairyExceptSuns() || (logic->CanUse(RG_SUNS_SONG) && logic->IsAdult)),
+        LOCATION(RC_TOT_RIGHTMOST_GOSSIP_STONE_FAIRY_BIG,    logic->CanUse(RG_SONG_OF_STORMS)),
+        LOCATION(RC_TOT_LEFTMOST_GOSSIP_STONE,               true),
+        LOCATION(RC_TOT_LEFT_CENTER_GOSSIP_STONE,            true),
+        LOCATION(RC_TOT_RIGHT_CENTER_GOSSIP_STONE,           true),
+        LOCATION(RC_TOT_RIGHTMOST_GOSSIP_STONE,              true),
+    }, {
+        //Exits
+        ENTRANCE(RR_THE_MARKET,     true),
+        ENTRANCE(RR_TEMPLE_OF_TIME, true),
+    });
+
+    areaTable[RR_TEMPLE_OF_TIME] = Region("Temple of Time", SCENE_TEMPLE_OF_TIME, {}, {
+        //Locations
+        LOCATION(RC_TOT_LIGHT_ARROWS_CUTSCENE, logic->IsAdult && logic->HasItem(RG_SHADOW_MEDALLION) && logic->HasItem(RG_SPIRIT_MEDALLION)),
+        LOCATION(RC_ALTAR_HINT_CHILD,          logic->IsChild),
+        LOCATION(RC_ALTAR_HINT_ADULT,          logic->IsAdult),
+        LOCATION(RC_TOT_SHEIK_HINT,            logic->IsAdult && logic->HasItem(RG_SPEAK_HYLIAN)),
+        LOCATION(RC_TOT_ALTAR,                 logic->CanRead()),
+    }, {
+        //Exits
+        ENTRANCE(RR_TOT_ENTRANCE,            true),
+        ENTRANCE(RR_TOT_BEYOND_DOOR_OF_TIME, ctx->GetOption(RSK_DOOR_OF_TIME).Is(RO_DOOROFTIME_OPEN) || (logic->CanUse(RG_SONG_OF_TIME) && (ctx->GetOption(RSK_DOOR_OF_TIME).Is(RO_DOOROFTIME_SONGONLY) || (logic->StoneCount() == 3 && logic->HasItem(RG_OCARINA_OF_TIME))))),
+    });
+
+    areaTable[RR_TOT_BEYOND_DOOR_OF_TIME] = Region("Beyond Door of Time", SCENE_TEMPLE_OF_TIME, {}, {
+        //Locations
+        LOCATION(RC_TOT_MASTER_SWORD, logic->IsAdult),
+        LOCATION(RC_GIFT_FROM_RAURU,  logic->IsAdult),
+        LOCATION(RC_SHEIK_AT_TEMPLE,  logic->IsAdult && logic->HasItem(RG_FOREST_MEDALLION)),
+    }, {
+        //Exits
+        ENTRANCE(RR_TEMPLE_OF_TIME, true),
+    });
+
+    // clang-format on
+}

@@ -1,0 +1,184 @@
+#pragma once
+
+#include "SeedContext.h"
+#include <stdint.h>
+
+namespace Rando {
+
+enum class HasProjectileAge {
+    Adult,
+    Child,
+    Both,
+    Either,
+};
+
+enum class GlitchType {
+    EquipSwapDins,
+    EquipSwap,
+};
+
+class Logic {
+  public:
+    uint8_t Bottles = 0;
+    uint8_t NumBottles = 0;
+    bool IsChild = false;
+    bool IsAdult = false;
+    uint8_t BigPoes = 0;
+    // hearts we start the seed with, health itself lives in the save context
+    uint8_t BaseHearts = 0;
+    bool AtDay = false;
+    bool AtNight = false;
+    RandomizerRegion CurrentRegionKey = RR_NONE;
+    RandomizerCheck CurrentCheckKey = RC_UNKNOWN_CHECK;
+
+    bool CalculatingAvailableChecks = false;
+    bool ACProcessUndiscoveredExits = false;
+
+    SaveContext* mSaveContext = nullptr;
+    Logic();
+    bool CanUse(RandomizerGet itemName);
+    bool HasProjectile(HasProjectileAge age);
+    bool HasItem(RandomizerGet itemName);
+    bool ItemUseAllowed(RandomizerGet itemName);
+    bool BAllowed();
+    bool SmallKeys(SceneID scene, uint8_t requiredAmount);
+    bool CanGroundJump(bool hasBombflower = false);
+    bool CanGroundJumpslash(bool hasBombflower = false);
+    bool CanMiddairGroundJump(bool hasBombflower = false);
+    bool CanOpenUnderwaterChest();
+    bool CanOpenLargeChest();
+    bool CanDoGlitch(GlitchType glitch);
+    bool CanEquipSwap(RandomizerGet itemName);
+    bool CanKillEnemy(RandomizerEnemy enemy, EnemyDistance distance = ED_CLOSE, bool wallOrFloor = true,
+                      uint8_t quantity = 1, bool timer = false, bool inWater = false);
+    bool CanPassEnemy(RandomizerEnemy enemy, EnemyDistance distance = ED_CLOSE, bool wallOrFloor = true);
+    bool CanAvoidEnemy(RandomizerEnemy enemy, bool grounded = false, uint8_t quantity = 1);
+    bool CanGetEnemyDrop(RandomizerEnemy enemy, EnemyDistance distance = ED_CLOSE, bool aboveLink = false);
+    bool CanBreakMudWalls();
+    bool CanGetDekuBabaSticks();
+    bool CanGetDekuBabaNuts();
+    bool CanHitEyeTargets();
+    bool CanDetonateBombFlowers();
+    bool CanDetonateUprightBombFlower();
+    bool BeanPlanted(LogicVal beanEvent);
+    bool CanHammerRecoilHover(bool needShield = false);
+    bool Water3FCentralToHighEmblem();
+    bool WaterRisingTargetTo3FCentral();
+    bool WaterLevel(RandoWaterLevel level);
+    uint8_t BottleCount();
+    uint8_t OcarinaButtons();
+    bool HasBottle();
+    bool CanUseSword();
+    bool CanJumpslashExceptHammer();
+    bool CanJumpslash();
+    bool CanClearStalagmite();
+    bool CanHitSwitch(EnemyDistance distance = ED_CLOSE, bool inWater = false);
+    bool CanDamage();
+    bool CanAttack();
+    bool BombchusEnabled();
+    bool BombchuRefill();
+    bool ShopItemNotForSale(RandomizerCheck loc);
+    bool HookshotOrBoomerang();
+    bool ScarecrowsSong();
+    bool BlueFire();
+    bool HasExplosives();
+    bool BlastOrSmash();
+    bool CanSpawnSoilSkull(RandomizerGet bean);
+    bool CanReflectNuts();
+    bool CanCutShrubs();
+    bool CanStunDeku();
+    bool CallGossipFairy();
+    bool CallGossipFairyExceptSuns();
+    uint16_t Health();
+    uint16_t EffectiveHealth();
+    uint8_t StoneCount();
+    uint8_t MedallionCount();
+    uint8_t DungeonCount();
+    uint16_t FireTimer();
+    uint16_t WaterTimer();
+    bool TakeDamage();
+    bool CanVoid();
+    bool CanOpenBombGrotto();
+    bool CanOpenStormsGrotto();
+    bool CanGetNightTimeGS();
+    bool CanBreakUpperBeehives();
+    bool CanBreakLowerBeehives();
+    bool CanBreakPots(EnemyDistance distance = ED_CLOSE, bool wallOrFloor = true, bool inWater = false);
+    bool CanBreakCrates();
+    bool CanBreakSmallCrates();
+    bool CanBreakRocks();
+    bool CanBonkTrees();
+    bool CanRead();
+    bool HasFireSource();
+    bool HasFireSourceWithTorch();
+    bool SunlightArrows();
+    bool CanStandingShield();
+    bool CanShield();
+    bool CanUseProjectile();
+    bool CanBuildRainbowBridge();
+    bool CanTriggerGBK();
+    bool CanTriggerGanonsSoul();
+    bool CanTriggerWincon();
+    bool IsFireLoopLocked();
+    bool ReachScarecrow();
+    bool ReachDistantScarecrow();
+    bool CanClimbLadder();
+    bool CanClimbHighLadder();
+    bool SummonEpona();
+    void Reset(bool resetSaveContext = true);
+    void SetContext(std::shared_ptr<Context> _ctx);
+    bool Get(LogicVal logicVal);
+    void Set(LogicVal logicVal, bool remove);
+    void ApplyItemEffect(Item& item, bool state);
+    uint8_t InventorySlot(uint32_t item);
+    void SetUpgrade(uint32_t upgrade, uint8_t level);
+    uint32_t CurrentUpgrade(uint32_t upgrade);
+    uint32_t CurrentInventory(uint32_t item);
+    bool CheckInventory(uint32_t item, bool exact);
+    void SetInventory(uint32_t itemSlot, uint32_t item);
+    bool CheckEquipment(uint32_t item);
+    bool CheckQuestItem(uint32_t item);
+    void SetQuestItem(uint32_t item, bool state);
+    int8_t GetSmallKeyCount(SceneID sceneId);
+    void SetSmallKeyCount(uint32_t dungeonIndex, uint8_t count);
+    bool CheckDungeonItem(uint32_t item, uint32_t dungeonIndex);
+    void SetDungeonItem(uint32_t item, uint32_t dungeonIndex, bool state);
+    bool CheckRandoInf(uint32_t flag);
+    void SetRandoInf(uint32_t flag, bool state);
+    bool CheckEventChkInf(int32_t flag);
+    uint8_t GetGSCount();
+    uint8_t GetTriforcePieceCount();
+    void SetEventChkInf(int32_t flag, bool state);
+    uint8_t GetAmmo(uint32_t item);
+    void SetAmmo(uint32_t item, uint8_t count);
+    SaveContext* GetSaveContext();
+    void SetSaveContext(SaveContext* context);
+    void InitSaveContext();
+    void NewSaveContext();
+    static std::map<uint32_t, uint32_t> RandoGetToQuestItem;
+    static std::map<uint32_t, SceneID> RandoGetToDungeonScene;
+    static std::map<RandomizerGet, uint32_t> RandoGetToEquipFlag;
+    bool IsReverseAccessPossible();
+    bool DMCUpperToPots();
+    bool DMCPotsToPad();
+    bool DMCPadToPots();
+    bool DMCUpperToPad();
+    bool SpiritEastToSwitch();
+    bool SpiritWestToSkull();
+    bool SpiritSunBlockSouthLedge();
+    bool MQSpiritWestToPots();
+    bool MQSpiritStatueToSunBlock();
+    bool MQSpiritStatueSouthDoor();
+    bool MQSpirit4KeyColossus();
+    bool MQSpirit4KeyWestHand();
+    bool CouldMQSpirit4KeyWestHand();
+    bool OuterWestHandLogic();
+    bool OuterWestHandMQLogic();
+    bool SpiritExplosiveKeyLogic();
+    bool StatueRoomMQKeyLogic();
+
+  private:
+    std::shared_ptr<Context> ctx;
+    bool inLogic[LOGIC_MAX];
+}; // class Logic
+} // namespace Rando

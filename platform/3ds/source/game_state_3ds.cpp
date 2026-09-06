@@ -1,0 +1,419 @@
+#include "game_state_3ds.h"
+#include "input_policy_3ds.hpp"
+
+#include "engine/AllTracks.h"
+#include "engine/Cup.h"
+#include "engine/World.h"
+#include "engine/registry/RegisterContent.h"
+#include "engine/sky/Sky.h"
+#include "port/Game.h"
+
+#include "assets/textures/other_textures.h"
+#include "assets/textures/player_selection.h"
+#include "assets/textures/texture_tkmk00.h"
+
+#include <libultraship/bridge/consolevariablebridge.h>
+
+extern "C" {
+#include "audio/external.h"
+#include "code_80005FD0.h"
+#include "code_80057C60.h"
+#include "main.h"
+#include "menu_items.h"
+#include "menus.h"
+#include "objects.h"
+#include "racing/race_logic.h"
+#include "save.h"
+#include "sounds.h"
+
+extern const int8_t D_800F0B54[];
+}
+
+#include <array>
+#include <cstring>
+#include <memory>
+#include <string>
+
+extern std::unique_ptr<Cup> gMushroomCup;
+extern std::unique_ptr<Cup> gFlowerCup;
+extern std::unique_ptr<Cup> gStarCup;
+extern std::unique_ptr<Cup> gSpecialCup;
+extern std::unique_ptr<Cup> gBattleCup;
+extern std::unique_ptr<Sky> gSky;
+
+namespace {
+struct VanillaTrack {
+    const char* resourceName;
+    const char* name;
+    const char* debugName;
+    const char* length;
+    const char* minimap;
+    const char* preview;
+    void (*select)();
+};
+
+const std::array<VanillaTrack, 20> kTracks = {{
+    { "mk:mario_raceway", "mario raceway", "m circuit", "567m", minimap_mario_raceway,
+      gTextureCoursePreviewMarioRaceway, SelectMarioRaceway },
+    { "mk:choco_mountain", "choco mountain", "mountain", "687m", minimap_choco_mountain,
+      gTextureCoursePreviewChocoMountain, SelectChocoMountain },
+    { "mk:bowsers_castle", "bowser's castle", "castle", "777m", minimap_bowsers_castle,
+      gTextureCoursePreviewBowsersCastle, SelectBowsersCastle },
+    { "mk:banshee_boardwalk", "banshee boardwalk", "ghost", "747m", minimap_banshee_boardwalk,
+      gTextureCoursePreviewBansheeBoardwalk, SelectBansheeBoardwalk },
+    { "mk:yoshi_valley", "yoshi valley", "maze", "772m", minimap_yoshi_valley,
+      gTextureCoursePreviewYoshiValley, SelectYoshiValley },
+    { "mk:frappe_snowland", "frappe snowland", "snow", "734m", minimap_frappe_snowland,
+      gTextureCoursePreviewFrappeSnowland, SelectFrappeSnowland },
+    { "mk:koopa_troopa_beach", "koopa troopa beach", "beach", "691m", minimap_koopa_troopa_beach,
+      gTextureCoursePreviewKoopaTroopaBeach, SelectKoopaTroopaBeach },
+    { "mk:royal_raceway", "royal raceway", "p circuit", "1025m", minimap_royal_raceway,
+      gTextureCoursePreviewRoyalRaceway, SelectRoyalRaceway },
+    { "mk:luigi_raceway", "luigi raceway", "l circuit", "717m", minimap_luigi_raceway,
+      gTextureCoursePreviewLuigiRaceway, SelectLuigiRaceway },
+    { "mk:moo_moo_farm", "moo moo farm", "farm", "527m", minimap_moo_moo_farm,
+      gTextureCoursePreviewMooMooFarm, SelectMooMooFarm },
+    { "mk:toads_turnpike", "toad's turnpike", "highway", "1036m", minimap_toads_turnpike,
+      gTextureCoursePreviewToadsTurnpike, SelectToadsTurnpike },
+    { "mk:kalimari_desert", "kalimari desert", "desert", "753m", minimap_kalimari_desert,
+      gTextureCoursePreviewKalimariDesert, SelectKalimariDesert },
+    { "mk:sherbet_land", "sherbet land", "sherbet", "756m", minimap_sherbet_land,
+      gTextureCoursePreviewSherbetLand, SelectSherbetLand },
+    { "mk:rainbow_road", "rainbow road", "rainbow", "2000m", minimap_rainbow_road,
+      gTextureCoursePreviewRainbowRoad, SelectRainbowRoad },
+    { "mk:wario_stadium", "wario stadium", "stadium", "1591m", minimap_wario_stadium,
+      gTextureCoursePreviewWarioStadium, SelectWarioStadium },
+    { "mk:block_fort", "block fort", "block", "", minimap_block_fort,
+      gTextureCoursePreviewBlockFort, SelectBlockFort },
+    { "mk:skyscraper", "skyscraper", "skyscraper", "", minimap_skyscraper,
+      gTextureCoursePreviewSkyscraper, SelectSkyscraper },
+    { "mk:double_deck", "double deck", "deck", "", minimap_double_deck,
+      gTextureCoursePreviewDoubleDeck, SelectDoubleDeck },
+    { "mk:dk_jungle", "d.k.'s jungle parkway", "jungle", "893m", minimap_dks_jungle_parkway,
+      gTextureCoursePreviewDksJungleParkway, SelectDkJungle },
+    { "mk:big_donut", "big donut", "doughnut", "", minimap_big_donut,
+      gTextureCoursePreviewBigDonut, SelectBigDonut },
+}};
+constexpr std::array<uint8_t, 8> kNativePlaceGreen = {
+    255, 237, 215, 191, 162, 130, 97, 58,
+};
+
+size_t sTrackIndex = 0;
+bool sSelectedMirrorMode = false;
+int8_t sLastTopHudEnabled = -1;
+Mk64TopHudRenderMode3DS sHiddenTopHudMode = MK64_TOP_HUD_RENDER_NONE;
+bool sWasRacing = false;
+
+void RegisterVanillaTracks() {
+    gTrackRegistry.Clear();
+    for (const VanillaTrack& track : kTracks) {
+        TrackInfo info = {
+            .ResourceName = track.resourceName,
+            .Name = track.name,
+            .DebugName = track.debugName,
+            .Length = track.length,
+            .MinimapTexture = track.minimap,
+        };
+        gTrackRegistry.Add(info, [select = track.select]() { select(); });
+    }
+
+    // The ceremony is not selectable in the browser's 20-course index, but
+    // it still goes through Track::Load after a Grand Prix. Keep it in the
+    // registry so that path initializes its collision arena as well.
+    TrackInfo podium = {
+        .ResourceName = "mk:podium_ceremony",
+        .Name = "podium ceremony",
+        .DebugName = "podium",
+        .Length = "1025m",
+        .MinimapTexture = nullptr,
+    };
+    gTrackRegistry.Add(podium, []() { SelectPodiumCeremony(); });
+}
+
+void SelectIndex(size_t index) {
+    if (index >= kTracks.size()) return;
+    World* world = GetWorld();
+    Track* currentTrack = world == nullptr ? nullptr : world->GetTrack();
+    if (index == sTrackIndex && currentTrack != nullptr &&
+        currentTrack->ResourceName == kTracks[index].resourceName &&
+        sSelectedMirrorMode == (gIsMirrorMode != 0)) {
+        return;
+    }
+    sTrackIndex = index;
+    kTracks[index].select();
+    sSelectedMirrorMode = gIsMirrorMode != 0;
+}
+}
+
+extern "C" bool Mk64GameState3DSInit() {
+    sLastTopHudEnabled = -1;
+    sHiddenTopHudMode = MK64_TOP_HUD_RENDER_NONE;
+    sWasRacing = false;
+    gSky = std::make_unique<Sky>();
+    RegisterVanillaTracks();
+
+    gMushroomCup = std::make_unique<Cup>("mk:mushroom_cup", "Mushroom Cup",
+        std::vector<std::string>{ "mk:luigi_raceway", "mk:moo_moo_farm", "mk:koopa_troopa_beach", "mk:kalimari_desert" });
+    gFlowerCup = std::make_unique<Cup>("mk:flower_cup", "Flower Cup",
+        std::vector<std::string>{ "mk:toads_turnpike", "mk:frappe_snowland", "mk:choco_mountain", "mk:mario_raceway" });
+    gStarCup = std::make_unique<Cup>("mk:star_cup", "Star Cup",
+        std::vector<std::string>{ "mk:wario_stadium", "mk:sherbet_land", "mk:royal_raceway", "mk:bowsers_castle" });
+    gSpecialCup = std::make_unique<Cup>("mk:special_cup", "Special Cup",
+        std::vector<std::string>{ "mk:dk_jungle", "mk:yoshi_valley", "mk:banshee_boardwalk", "mk:rainbow_road" });
+    gBattleCup = std::make_unique<Cup>("mk:battle_cup", "Battle Cup",
+        std::vector<std::string>{ "mk:big_donut", "mk:block_fort", "mk:double_deck", "mk:skyscraper" });
+
+    gMushroomCup->ValidateTrackIds(gTrackRegistry);
+    gFlowerCup->ValidateTrackIds(gTrackRegistry);
+    gStarCup->ValidateTrackIds(gTrackRegistry);
+    gSpecialCup->ValidateTrackIds(gTrackRegistry);
+    gBattleCup->ValidateTrackIds(gTrackRegistry);
+
+    World* world = GetWorld();
+    if (world == nullptr) return false;
+    world->Cups.clear();
+    world->AddCup(gMushroomCup.get());
+    world->AddCup(gFlowerCup.get());
+    world->AddCup(gStarCup.get());
+    world->AddCup(gSpecialCup.get());
+    world->AddCup(gBattleCup.get());
+
+    RegisterItems(gItemRegistry);
+    RegisterItemTables(gItemTableRegistry);
+    SetMarioRaceway();
+    sTrackIndex = 0;
+    sSelectedMirrorMode = gIsMirrorMode != 0;
+    return true;
+}
+
+extern "C" void TrackBrowser_SetTrack(const char* name) {
+    if (name == nullptr) return;
+    for (size_t index = 0; index < kTracks.size(); ++index) {
+        if (std::strcmp(name, kTracks[index].resourceName) == 0) {
+            SelectIndex(index);
+            return;
+        }
+    }
+}
+
+extern "C" void TrackBrowser_SetTrackFromCup() {
+    World* world = GetWorld();
+    Cup* cup = world == nullptr ? nullptr : world->GetCurrentCup();
+    if (cup == nullptr || cup->CursorPosition >= cup->mTracks.size()) return;
+
+    // menus.c asks for the selected cup track every frame. Borrow the existing
+    // cup string and avoid reconstructing a Track (and all of its resource
+    // vectors) while the selection has not changed.
+    const std::string& resourceName = cup->mTracks[cup->CursorPosition];
+    Track* currentTrack = world->GetTrack();
+    if (currentTrack != nullptr && currentTrack->ResourceName == resourceName &&
+        sSelectedMirrorMode == (gIsMirrorMode != 0)) {
+        return;
+    }
+    TrackBrowser_SetTrack(resourceName.c_str());
+}
+
+extern "C" void TrackBrowser_NextTrack() { SelectIndex((sTrackIndex + 1) % kTracks.size()); }
+extern "C" void TrackBrowser_PreviousTrack() { SelectIndex((sTrackIndex + kTracks.size() - 1) % kTracks.size()); }
+extern "C" size_t TrackBrowser_GetTrackIndex() { return sTrackIndex; }
+extern "C" const char* TrackBrowser_GetTrackName() { return kTracks[sTrackIndex].name; }
+extern "C" const char* TrackBrowser_GetTrackDebugName() { return kTracks[sTrackIndex].debugName; }
+extern "C" const char* TrackBrowser_GetTrackLength() { return kTracks[sTrackIndex].length; }
+extern "C" void TrackBrowser_SetTrackByIdx(size_t index) { SelectIndex(index); }
+extern "C" const char* TrackBrowser_GetTrackNameByIdx(size_t index) { return index < kTracks.size() ? kTracks[index].name : ""; }
+extern "C" const char* TrackBrowser_GetTrackDebugNameByIdx(size_t index) { return index < kTracks.size() ? kTracks[index].debugName : ""; }
+extern "C" const char* TrackBrowser_GetTrackLengthByIdx(size_t index) { return index < kTracks.size() ? kTracks[index].length : ""; }
+extern "C" const char* TrackBrowser_GetMinimapTextureByIdx(size_t index) { return index < kTracks.size() ? kTracks[index].minimap : nullptr; }
+
+extern "C" void Mk64GameState3DSGetBottomUISnapshot(Mk64BottomUIGameState3DS* snapshot) {
+    if (snapshot == nullptr) return;
+    std::memset(snapshot, 0, sizeof(*snapshot));
+    std::fill(std::begin(snapshot->standingPlayerIds), std::end(snapshot->standingPlayerIds), int8_t{-1});
+    std::fill(std::begin(snapshot->standingCharacterIds), std::end(snapshot->standingCharacterIds), int8_t{-1});
+    for (Mk64BottomUIRacer3DS& racer : snapshot->racers) {
+        racer.characterId = -1;
+        racer.rank = -1;
+    }
+
+    snapshot->gameState = gGamestate;
+    snapshot->gameMode = gModeSelection;
+    snapshot->menuSelection = gMenuSelection;
+    snapshot->mainMenuSelection = gMainMenuSelection;
+    snapshot->gameSelectVisible =
+        gMenuSelection == MAIN_MENU && gMainMenuSelection == MAIN_MENU_PLAYER_SELECT;
+    snapshot->racing = gGamestate == RACING;
+    snapshot->paused = snapshot->racing && gIsGamePaused != 0;
+    if (snapshot->racing && !sWasRacing) sHiddenTopHudMode = MK64_TOP_HUD_RENDER_NONE;
+    if (!snapshot->racing) sHiddenTopHudMode = MK64_TOP_HUD_RENDER_NONE;
+    sWasRacing = snapshot->racing;
+    snapshot->mirrorMode = gIsMirrorMode != 0;
+    snapshot->topHudRenderMode = static_cast<int8_t>(sHiddenTopHudMode);
+    snapshot->raceFinished = snapshot->racing && playerHUD[0].lapCount == 3;
+    snapshot->courseTimerCentiseconds = playerHUD[0].someTimer;
+    snapshot->courseTimerSeconds = static_cast<float>(snapshot->courseTimerCentiseconds) / 100.0f;
+    snapshot->currentItem = gPlayers[0].currentItemCopy;
+    const int itemWindowObject = gItemWindowObjectByPlayerId[0];
+    if (itemWindowObject >= 0 && itemWindowObject < OBJECT_LIST_SIZE) {
+        const Object& itemObject = gObjectList[itemWindowObject];
+        snapshot->itemWindowVisible = itemObject.state >= 2;
+        snapshot->itemTextureIndex = static_cast<uint8_t>(
+            std::clamp<int>(itemObject.textureListIndex, 0, 15));
+    }
+    snapshot->totalLaps = 3;
+    const int lap = std::clamp(gLapCountByPlayerId[0] + 1, 1, 3);
+    snapshot->currentLap = static_cast<int8_t>(lap);
+
+    snapshot->trackIndex = std::min(sTrackIndex, kTracks.size() - 1);
+    const VanillaTrack& track = kTracks[snapshot->trackIndex];
+    snapshot->trackName = track.name;
+    snapshot->coursePreviewTexture = track.preview;
+    snapshot->minimapTexture = track.minimap;
+    snapshot->mainBackgroundTexture = has_unlocked_extra_mode() != 0 ? background_sunset : background_blue_sky;
+
+    if (!snapshot->racing) return;
+
+    for (size_t playerId = 0; playerId < MK64_BOTTOM_UI_RACER_COUNT; ++playerId) {
+        const Player& player = gPlayers[playerId];
+        Mk64BottomUIRacer3DS& racer = snapshot->racers[playerId];
+        racer.active = (player.type & PLAYER_EXISTS) != 0;
+        if (!racer.active) continue;
+        ++snapshot->activeRacerCount;
+        racer.characterId = player.characterId < 8
+                                ? static_cast<int8_t>(player.characterId)
+                                : int8_t{-1};
+        racer.rank = player.currentRank >= 0 && player.currentRank < MK64_BOTTOM_UI_RACER_COUNT
+                         ? static_cast<int8_t>(player.currentRank)
+                         : int8_t{-1};
+        racer.worldX = player.pos[0];
+        racer.worldZ = player.pos[2];
+        racer.rotationY = player.rotation[1];
+    }
+
+    if (snapshot->gameMode == BATTLE) {
+        // Battle does not maintain the Grand Prix rank table. Present active
+        // participants honestly instead of stale "TOP 5" standings.
+        for (size_t playerId = 0;
+             playerId < MK64_BOTTOM_UI_RACER_COUNT &&
+             snapshot->standingCount < MK64_BOTTOM_UI_STANDING_COUNT;
+             ++playerId) {
+            if (!snapshot->racers[playerId].active) continue;
+            snapshot->standingPlayerIds[snapshot->standingCount] =
+                static_cast<int8_t>(playerId);
+            snapshot->standingCharacterIds[snapshot->standingCount] =
+                snapshot->racers[playerId].characterId;
+            snapshot->standingLapCounts[snapshot->standingCount] = 0;
+            snapshot->standingNativeX[snapshot->standingCount] = 40.0f;
+            snapshot->standingNativeY[snapshot->standingCount] =
+                35.0f + 32.0f * snapshot->standingCount;
+            snapshot->standingNativeDirection[snapshot->standingCount] = 0.0f;
+            ++snapshot->standingCount;
+        }
+    } else {
+        for (size_t rank = 0; rank < MK64_BOTTOM_UI_STANDING_COUNT; ++rank) {
+            const int playerId = gGPCurrentRacePlayerIdByRank[rank];
+            if (playerId < 0 || playerId >= MK64_BOTTOM_UI_RACER_COUNT ||
+                !snapshot->racers[playerId].active) {
+                continue;
+            }
+            snapshot->standingPlayerIds[snapshot->standingCount] = static_cast<int8_t>(playerId);
+            snapshot->standingCharacterIds[snapshot->standingCount] = static_cast<int8_t>(
+                std::clamp<int>(gGPCurrentRaceCharacterIdByRank[rank], 0, 7));
+            snapshot->standingLapCounts[snapshot->standingCount] =
+                static_cast<int8_t>(gLapCountByPlayerId[playerId]);
+            snapshot->standingUnknown[snapshot->standingCount] =
+                IsYoshiValley() && gLapCountByPlayerId[playerId] < 3;
+            snapshot->standingNativeX[snapshot->standingCount] = D_8018D028[rank];
+            snapshot->standingNativeY[snapshot->standingCount] = D_8018D050[rank];
+            snapshot->standingNativeDirection[snapshot->standingCount] = D_8018D078[rank];
+            ++snapshot->standingCount;
+        }
+    }
+
+    snapshot->standingAlpha = static_cast<uint8_t>(std::clamp<int>(D_8018D3E0, 0, 255));
+    snapshot->playerBorderRed = static_cast<uint8_t>(std::clamp<int>(D_8018D3E4, 0, 255));
+    snapshot->playerBorderGreen = static_cast<uint8_t>(std::clamp<int>(D_8018D3E8, 0, 255));
+    snapshot->playerBorderBlue = static_cast<uint8_t>(std::clamp<int>(D_8018D3EC, 0, 255));
+    snapshot->currentPlaceVisible = playerHUD[0].unk_81 != 0;
+    snapshot->currentPlaceIndex = static_cast<uint8_t>(
+        std::clamp<int>(playerHUD[0].lapCount == 3 ? gGPCurrentRaceRankByPlayerId[0]
+                                                   : D_8018CF98[0],
+                        0, 7));
+    const int placeColorIndex = playerHUD[0].lapCount == 3
+                                    ? std::clamp<int>(D_80165594, 0, 7)
+                                    : snapshot->currentPlaceIndex;
+    snapshot->currentPlaceGreen = kNativePlaceGreen[placeColorIndex];
+    snapshot->currentPlaceScale = playerHUD[0].rankScaling;
+    snapshot->currentPlaceNativeX = playerHUD[0].rankX + playerHUD[0].slideRankX;
+    snapshot->currentPlaceNativeY = playerHUD[0].rankY + playerHUD[0].slideRankY;
+
+    Properties* properties = CM_GetProps();
+    if (properties == nullptr) return;
+    snapshot->minimapTexture = properties->Minimap.Texture != nullptr
+                                   ? properties->Minimap.Texture
+                                   : track.minimap;
+    snapshot->minimapWidth = properties->Minimap.Width;
+    snapshot->minimapHeight = properties->Minimap.Height;
+    snapshot->minimapPlayerX = properties->Minimap.PlayerX;
+    snapshot->minimapPlayerY = properties->Minimap.PlayerY;
+    snapshot->minimapPlayerScale = properties->Minimap.PlayerScaleFactor;
+    snapshot->minimapFinishlineX = properties->Minimap.FinishlineX;
+    snapshot->minimapFinishlineY = properties->Minimap.FinishlineY;
+    snapshot->minimapRed = properties->Minimap.Colour.r;
+    snapshot->minimapGreen = properties->Minimap.Colour.g;
+    snapshot->minimapBlue = properties->Minimap.Colour.b;
+}
+
+extern "C" void Mk64GameState3DSSetTopHudEnabled(bool enabled) {
+    const int8_t value = enabled ? 1 : 0;
+    if (sLastTopHudEnabled == value) return;
+    sLastTopHudEnabled = value;
+    sHiddenTopHudMode = MK64_TOP_HUD_RENDER_NONE;
+    CVarSetInteger("gDrawHUD", enabled ? 1 : 0);
+}
+
+extern "C" bool Mk64GameState3DSRaceControlsActive() {
+    return gGamestate == RACING && gIsGamePaused == 0;
+}
+
+extern "C" bool Mk64GameState3DSCycleHiddenTopHud() {
+    if (!Mk64GameState3DSRaceControlsActive() || CVarGetInteger("gDrawHUD", true) != 0) {
+        return false;
+    }
+    sHiddenTopHudMode = mk64_3ds::NextHiddenTopHudMode(sHiddenTopHudMode);
+    return true;
+}
+
+extern "C" int Mk64GameState3DSGetTopHudRenderMode() {
+    if (gGamestate != RACING || gIsGamePaused != 0) return MK64_TOP_HUD_RENDER_NONE;
+    if (CVarGetInteger("gDrawHUD", true) != 0) return MK64_TOP_HUD_RENDER_FULL;
+    return static_cast<int>(sHiddenTopHudMode);
+}
+
+extern "C" bool Mk64GameState3DSPerformPauseAction(Mk64PauseAction3DS action) {
+    if (gGamestate != RACING || gIsGamePaused == 0) return false;
+    MenuItem* pauseItem = find_menu_items(MENU_ITEM_PAUSE);
+    if (pauseItem == nullptr) return false;
+    if (action == MK64_PAUSE_ACTION_CONTINUE) {
+        pauseItem->state = 0;
+        gIsGamePaused = 0;
+        func_8028DF38();
+        func_800C9F90(0);
+        return true;
+    }
+    if (action == MK64_PAUSE_ACTION_QUIT) {
+        const int mode = std::clamp<int>(gModeSelection, 0, 3);
+        pauseItem->state = D_800F0B54[mode];
+        func_8009DFE0(30);
+        play_sound2(SOUND_ACTION_CONTINUE_UNKNOWN);
+        func_800CA330(60);
+        return true;
+    }
+    return false;
+}
+
+extern "C" void Mk64GameState3DSApplyTurbo(bool active, uint8_t multiplier) {
+    const int clampedMultiplier = std::clamp<int>(multiplier, 1, 5);
+    // The unmodified game executes two 30 Hz logic ticks for each rendered
+    // key frame. User-facing x1 must preserve that baseline.
+    gTickLogic = active ? 2 * clampedMultiplier : 2;
+}

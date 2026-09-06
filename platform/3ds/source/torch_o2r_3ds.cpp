@@ -1,0 +1,92 @@
+#include "Companion.h"
+#include "install_log_3ds.h"
+
+#include <3ds.h>
+
+#include <array>
+#include <cerrno>
+#include <exception>
+#include <filesystem>
+#include <cstdio>
+#include <cstdint>
+#include <malloc.h>
+#include <string>
+#include <vector>
+
+namespace {
+void LogTorchMemory(const char* phase) {
+    const struct mallinfo heap = mallinfo();
+    Mk64InstallLogWritef(
+        "Torch adapter memory at %s: heap arena=%lu allocated=%lu free=%lu releasable=%lu; linear free=%lu; "
+        "application region unused=%lu/%lu.",
+        phase, static_cast<unsigned long>(heap.arena), static_cast<unsigned long>(heap.uordblks),
+        static_cast<unsigned long>(heap.fordblks), static_cast<unsigned long>(heap.keepcost),
+        static_cast<unsigned long>(linearSpaceFree()),
+        static_cast<unsigned long>(osGetMemRegionFree(MEMREGION_APPLICATION)),
+        static_cast<unsigned long>(osGetMemRegionSize(MEMREGION_APPLICATION)));
+}
+
+void DestroyTorchInstance(Companion** instance) {
+    if (instance != nullptr) {
+        delete *instance;
+        *instance = nullptr;
+    }
+    Companion::Instance = nullptr;
+    malloc_trim(0);
+}
+}
+
+bool Mk64Torch3DSBuildO2R(const char* rom, const char* sourceDir, const char* destinationDir,
+                          const char* additionalFile, char* error, size_t errorSize) {
+    Companion* instance = nullptr;
+    if (error != nullptr && errorSize != 0) error[0] = '\0';
+
+    try {
+        Mk64InstallLogWritef("Torch: starting extraction; source=%s destination=%s", sourceDir, destinationDir);
+        std::vector<std::string> additionalFiles;
+        if (additionalFile != nullptr && additionalFile[0] != '\0') {
+            additionalFiles.emplace_back(additionalFile);
+        }
+
+        // The explicit modding argument is required: without it, C++ prefers
+        // the overload that converts sourceDir to bool and silently swaps the
+        // source/destination roles on 3DS. Use the path constructor so Torch
+        // loads the ROM after parsing config.yml instead of holding 12 MiB
+        // during the YAML load.
+        instance = Companion::Instance =
+            new Companion(std::filesystem::path(rom), ArchiveType::O2R, false, false, sourceDir, destinationDir);
+        instance->SetAdditionalFiles(additionalFiles);
+        instance->Init(ExportType::Binary);
+        const std::string outputPath = instance->GetOutputPath();
+        Mk64InstallLogWritef("Torch: reported output path: %s", outputPath.empty() ? "(empty)" : outputPath.c_str());
+        FILE* generatedArchive = outputPath.empty() ? nullptr : std::fopen(outputPath.c_str(), "rb");
+        if (generatedArchive == nullptr) {
+            throw std::runtime_error("Torch completed without creating its O2R archive.");
+        }
+        std::fclose(generatedArchive);
+        DestroyTorchInstance(&instance);
+        LogTorchMemory("successful cleanup");
+        Mk64InstallLogWrite("Torch: extraction and archive finalization completed.");
+        return true;
+    } catch (const std::exception& exception) {
+        const int failureErrno = errno;
+        Mk64InstallLogWritef("Torch: exception: %s (errno=%d).", exception.what(), failureErrno);
+        LogTorchMemory("exception before cleanup");
+        if (error != nullptr && errorSize != 0) {
+            std::snprintf(error, errorSize, "%s", exception.what());
+        }
+        DestroyTorchInstance(&instance);
+        LogTorchMemory("exception cleanup");
+        return false;
+    } catch (...) {
+        const int failureErrno = errno;
+        Mk64InstallLogWritef("Torch: unknown non-standard exception (errno=%d).", failureErrno);
+        LogTorchMemory("unknown exception before cleanup");
+        if (error != nullptr && errorSize != 0) {
+            std::snprintf(error, errorSize, "The Torch extractor raised an unknown error.");
+        }
+        DestroyTorchInstance(&instance);
+        LogTorchMemory("unknown exception cleanup");
+        return false;
+    }
+}

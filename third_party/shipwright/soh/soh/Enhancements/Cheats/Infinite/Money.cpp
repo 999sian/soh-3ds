@@ -1,0 +1,28 @@
+#include "soh/Enhancements/game-interactor/GameInteractor.h"
+#include "soh/ShipInit.hpp"
+
+extern "C" {
+#include "z64save.h"
+#include "variables.h"
+#include "macros.h"
+extern SaveContext gSaveContext;
+extern s32 Flags_GetRandomizerInf(RandomizerInf flag);
+}
+
+#define CVAR_INFINITE_MONEY_NAME CVAR_CHEAT("InfiniteMoney")
+#define CVAR_INFINITE_MONEY_DEFAULT 0
+#define CVAR_INFINITE_MONEY_VALUE CVarGetInteger(CVAR_INFINITE_MONEY_NAME, CVAR_INFINITE_MONEY_DEFAULT)
+
+void OnGameFrameUpdateInfiniteMoney() {
+    if (!GameInteractor::IsSaveLoaded(true) || (IS_RANDO && !Flags_GetRandomizerInf(RAND_INF_HAS_WALLET))) {
+        return;
+    }
+
+    gSaveContext.rupees = CUR_CAPACITY(UPG_WALLET);
+}
+
+void RegisterInfiniteMoney() {
+    COND_HOOK(OnGameFrameUpdate, CVAR_INFINITE_MONEY_VALUE, OnGameFrameUpdateInfiniteMoney);
+}
+
+static RegisterShipInitFunc initFunc(RegisterInfiniteMoney, { CVAR_INFINITE_MONEY_NAME });

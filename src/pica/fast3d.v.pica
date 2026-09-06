@@ -1,0 +1,52 @@
+; Fast3D vertex shader for PICA200.
+;
+; One shader, no variants. Everything that other Fast3D backends express by
+; generating shader permutations is done on PICA either by the fixed-function
+; TexEnv stages (colour combiner) or by CPU-side vertex packing.
+;
+; Attributes, matching AttrInfo_AddLoader order in gfx_citro3d.cpp:
+;   v0  position   float4
+;   v1  texcoord0  float2
+;   v2  texcoord1  float2
+;   v3  colour     unsigned byte x4   (arrives as 0..255, needs 1/255)
+;
+; Uniforms:
+;   projection[0..3]  clip-space matrix, row-major for dp4
+;
+; Depth: PICA clips z to [-w, 0], not OpenGL's [-w, w]. That remap is folded
+; into the projection matrix on the CPU (see BuildProjection), so this shader
+; does a plain dp4 and nothing more. Keeping it out of here avoids spending
+; instructions per vertex on a per-draw constant.
+
+; x = 0.0, y = 1.0, z = 1/255, w = -1.0
+.constf constants(0.0, 1.0, 0.00392156862745098, -1.0)
+.alias  inv255 constants.zzzz
+
+.fvec projection[4]
+
+.in inpos  v0
+.in intex0 v1
+.in intex1 v2
+.in inclr  v3
+
+.out outpos position
+.out outtc0 texcoord0
+.out outtc1 texcoord1
+.out outclr color
+
+.proc main
+    ; clip = projection * position
+    dp4 r0.x, projection[0], inpos
+    dp4 r0.y, projection[1], inpos
+    dp4 r0.z, projection[2], inpos
+    dp4 r0.w, projection[3], inpos
+    mov outpos, r0
+
+    mov outtc0, intex0
+    mov outtc1, intex1
+
+    ; unsigned-byte colour attributes arrive as 0..255
+    mul outclr, inv255, inclr
+
+    end
+.end

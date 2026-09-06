@@ -1,0 +1,3676 @@
+diff --git a/cmake/dependencies/common.cmake b/cmake/dependencies/common.cmake
+index 80dec56..857ef60 100644
+--- a/cmake/dependencies/common.cmake
++++ b/cmake/dependencies/common.cmake
+@@ -27,11 +27,17 @@ target_sources(ImGui
+     ${imgui_SOURCE_DIR}/imgui.cpp
+ )
+ 
++# SoH-3DS: the 3DS has no OpenGL and does not use SDL2 for video, so neither of
++# these backends can compile (imgui_impl_opengl3 needs dlfcn.h, imgui_impl_sdl2
++# needs SDL.h on the include path). The 3DS port supplies its own citro3d ImGui
++# backend instead.
++if(NOT N3DS)
+ target_sources(ImGui
+     PRIVATE
+     ${imgui_SOURCE_DIR}/backends/imgui_impl_opengl3.cpp
+     ${imgui_SOURCE_DIR}/backends/imgui_impl_sdl2.cpp
+ )
++endif()
+ 
+ target_include_directories(ImGui PUBLIC ${imgui_SOURCE_DIR} ${imgui_SOURCE_DIR}/backends PRIVATE ${SDL2_INCLUDE_DIRS})
+ 
+diff --git a/include/fast/Fast3dGui.h b/include/fast/Fast3dGui.h
+index 80d0231..cb388dd 100644
+--- a/include/fast/Fast3dGui.h
++++ b/include/fast/Fast3dGui.h
+@@ -43,6 +43,12 @@ typedef struct {
+             uint32_t Width;  ///< Framebuffer width in pixels.
+             uint32_t Height; ///< Framebuffer height in pixels.
+         } Gx2;
++        /// SoH-3DS: citro3d/PICA200. Like Gx2, there is no window or context
++        /// handle to pass - the screens are fixed and owned by the renderer.
++        struct {
++            uint32_t Width;  ///< Top screen width in pixels (400).
++            uint32_t Height; ///< Top screen height in pixels (240).
++        } Ctr;
+     };
+     WindowBackend Backend;
+ } GuiWindowInitData;
+diff --git a/include/fast/Fast3dWindow.h b/include/fast/Fast3dWindow.h
+index 7c16ca1..c04103d 100644
+--- a/include/fast/Fast3dWindow.h
++++ b/include/fast/Fast3dWindow.h
+@@ -23,6 +23,10 @@ enum WindowBackend {
+     FAST3D_DXGI_DX11 = 1,
+     FAST3D_SDL_OPENGL = 2,
+     FAST3D_SDL_METAL = 3,
++    // SoH-3DS: citro3d/PICA200. A new value rather than reusing an existing one
++    // so a config written on one platform cannot select a backend that does not
++    // exist on another.
++    FAST3D_CITRO3D = 4,
+ };
+ 
+ class Fast3dWindow : public Ship::Window {
+@@ -89,8 +93,10 @@ class Fast3dWindow : public Ship::Window {
+     std::shared_ptr<GfxDebugger> GetGfxDebugger() const;
+ 
+   protected:
+-    static bool KeyDown(int32_t scancode);
+-    static bool KeyUp(int32_t scancode);
++    // SoH-3DS: GfxWindowBackend::SetKeyboardCallbacks takes bool(*)(int).
++    // int32_t is not int on devkitARM, so these must be spelled `int`.
++    static bool KeyDown(int scancode);
++    static bool KeyUp(int scancode);
+     static void AllKeysUp();
+     static bool MouseButtonDown(int button);
+     static bool MouseButtonUp(int button);
+diff --git a/include/fast/interpreter.h b/include/fast/interpreter.h
+index 4c6a705..d76c9b7 100644
+--- a/include/fast/interpreter.h
++++ b/include/fast/interpreter.h
+@@ -15,6 +15,10 @@
+ #include "fast/lus_gbi.h"
+ #include "fast/types.h"
+ #include "fast/ucodehandlers.h"
++
++namespace Ship {
++class IResource;
++}
+ #include "backends/gfx_rendering_api.h"
+ #include "fast/debug/GfxDebugger.h"
+ 
+@@ -368,6 +372,10 @@ struct FBInfo {
+ struct MaskedTextureEntry {
+     uint8_t* mask;
+     uint8_t* replacementData;
++    // SoH-3DS: pins the resource backing replacementData. Without this the
++    // only shared_ptr died at registration time and scene/object eviction
++    // freed ImageData under the map entry (use-after-free at import time).
++    std::shared_ptr<Ship::IResource> replacementResource;
+ };
+ 
+ class Interpreter {
+@@ -520,6 +528,11 @@ class Interpreter {
+     GfxDimensions mPrvDimensions{};        // gfx_prev_dimensions;
+     XYWidthHeight mGameWindowViewport{};   // gfx_current_game_window_viewport;
+     XYWidthHeight mNativeDimensions{};     // gfx_native_dimensions;
++    // SoH-3DS: cached 4:3 aspect multiplier for AdjXForAspectRatio (called
++    // per vertex); recomputed only when mCurDimensions changes.
++    mutable float mAspectAdjustMultiplier = 1.0f;
++    mutable uint32_t mAspectAdjustWidth = 0;
++    mutable uint32_t mAspectAdjustHeight = 0;
+     XYWidthHeight mPrevNativeDimensions{}; // gfx_prev_native_dimensions;
+     uintptr_t mGfxFrameBuffer{};
+ 
+diff --git a/include/libultraship/libultra/abi.h b/include/libultraship/libultra/abi.h
+index 3258dd1..1e4f2b1 100644
+--- a/include/libultraship/libultra/abi.h
++++ b/include/libultraship/libultra/abi.h
+@@ -1,6 +1,12 @@
+ #pragma once
+ 
+-typedef unsigned int u32;
++// SoH-3DS: libultra spellings, so this header agrees with types.h.
++// devkitARM makes int32_t `long int`, which is a different type from s32.
++#include "types.h"
++
++#include <stdint.h>
++typedef u32 u32; // SoH-3DS: was `unsigned int`, which conflicts with types.h on
++                      // devkitARM where u32 is not `unsigned int`.
+ 
+ /* Audio commands: */
+ #define A_SPNOOP 0
+diff --git a/include/libultraship/libultra/controller.h b/include/libultraship/libultra/controller.h
+index a82cb3d..fc186df 100644
+--- a/include/libultraship/libultra/controller.h
++++ b/include/libultraship/libultra/controller.h
+@@ -1,5 +1,9 @@
+ #pragma once
+ 
++// SoH-3DS: libultra spellings, so this header agrees with types.h.
++// devkitARM makes int32_t `long int`, which is a different type from s32.
++#include "types.h"
++
+ #include "stdint.h"
+ 
+ #define SIAccessQueueSize 2
+@@ -85,8 +89,8 @@
+ #define BTN_VSTICKRIGHT 0x800000
+ 
+ typedef struct {
+-    /* 0x00 */ int32_t ram[15];
+-    /* 0x3C */ int32_t status;
++    /* 0x00 */ s32 ram[15];
++    /* 0x3C */ s32 status;
+ } OSPifRam; // size = 0x40
+ 
+ typedef struct {
+diff --git a/include/libultraship/libultra/eeprom.h b/include/libultraship/libultra/eeprom.h
+index b64c87e..e92a783 100644
+--- a/include/libultraship/libultra/eeprom.h
++++ b/include/libultraship/libultra/eeprom.h
+@@ -1,5 +1,9 @@
+ #pragma once
+ 
++// SoH-3DS: libultra spellings, so this header agrees with types.h.
++// devkitARM makes int32_t `long int`, which is a different type from s32.
++#include "types.h"
++
+ #include "message.h"
+ 
+ #define EEPROM_TYPE_4K 0x01
+@@ -9,9 +13,9 @@
+ extern "C" {
+ #endif
+ 
+-int32_t osEepromProbe(OSMesgQueue*);
+-int32_t osEepromLongRead(OSMesgQueue*, uint8_t, uint8_t*, int32_t);
+-int32_t osEepromLongWrite(OSMesgQueue*, uint8_t, uint8_t*, int32_t);
++s32 osEepromProbe(OSMesgQueue*);
++s32 osEepromLongRead(OSMesgQueue*, uint8_t, uint8_t*, s32);
++s32 osEepromLongWrite(OSMesgQueue*, uint8_t, uint8_t*, s32);
+ 
+ #ifdef __cplusplus
+ }
+diff --git a/include/libultraship/libultra/gbi.h b/include/libultraship/libultra/gbi.h
+index 6beda75..dc8d32e 100644
+--- a/include/libultraship/libultra/gbi.h
++++ b/include/libultraship/libultra/gbi.h
+@@ -1,5 +1,9 @@
+ #pragma once
+ 
++// SoH-3DS: libultra spellings, so this header agrees with types.h.
++// devkitARM makes int32_t `long int`, which is a different type from s32.
++#include "types.h"
++
+ #include "mbi.h"
+ 
+ #ifdef _MSC_VER
+@@ -12,7 +16,7 @@
+ #endif
+ 
+ #ifndef u32
+-#define u32 uint32_t
++#define u32 u32
+ #endif
+ 
+ #ifndef u64
+@@ -28,7 +32,7 @@
+ #endif
+ 
+ #ifndef s32
+-#define s32 int32_t
++#define s32 s32
+ #endif
+ 
+ #ifndef s64
+@@ -685,7 +689,7 @@
+ #define G_BL_1 2
+ #define G_BL_0 3
+ 
+-#define GBL_c1(m1a, m1b, m2a, m2b) (uint32_t)(m1a) << 30 | (m1b) << 26 | (m2a) << 22 | (m2b) << 18
++#define GBL_c1(m1a, m1b, m2a, m2b) (u32)(m1a) << 30 | (m1b) << 26 | (m2a) << 22 | (m2b) << 18
+ #define GBL_c2(m1a, m1b, m2a, m2b) (m1a) << 28 | (m1b) << 24 | (m2a) << 20 | (m2b) << 16
+ 
+ #define RM_AA_ZB_OPA_SURF(clk)                                                  \
+@@ -3286,7 +3290,7 @@ typedef union Gfx {
+ #define __gDPSetTileSizeLerpCoord(g, w, coord) \
+     _DW({                                      \
+         float _f = (coord);                    \
+-        (g).words.w = *(uint32_t*)&_f;         \
++        (g).words.w = *(u32*)&_f;         \
+     })
+ 
+ #define __gDPSetTileSizeLerp(pkt, t, uls0, ult0, lrs0, lrt0, uls1, ult1, lrs1, lrt1) \
+@@ -3356,13 +3360,13 @@ typedef union Gfx {
+         Gfx* _g0 = (Gfx*)(pkt);                                                   \
+         Gfx* _g1 = (Gfx*)(pkt) + 1;                                               \
+         _g0->words.w0 = _SHIFTL(G_LOADBLOCK_WIDE, 24, 8) | _SHIFTL((tile), 0, 3); \
+-        _g0->words.w1 = (uint32_t)(lrs);                                          \
++        _g0->words.w1 = (u32)(lrs);                                          \
+         _g1->words.w0 = _SHIFTL((uls), 16, 16) | _SHIFTL((ult), 0, 16);           \
+         _g1->words.w1 = _SHIFTL((dxt), 0, 12);                                    \
+     }
+ 
+ #define gsDPLoadBlockWide(tile, uls, ult, lrs, dxt)                                  \
+-    { _SHIFTL(G_LOADBLOCK_WIDE, 24, 8) | _SHIFTL((tile), 0, 3), (uint32_t)(lrs) }, { \
++    { _SHIFTL(G_LOADBLOCK_WIDE, 24, 8) | _SHIFTL((tile), 0, 3), (u32)(lrs) }, { \
+         _SHIFTL((uls), 16, 16) | _SHIFTL((ult), 0, 16), _SHIFTL((dxt), 0, 12)        \
+     }
+ 
+diff --git a/include/libultraship/libultra/gu.h b/include/libultraship/libultra/gu.h
+index 535140a..7c15fc1 100644
+--- a/include/libultraship/libultra/gu.h
++++ b/include/libultraship/libultra/gu.h
+@@ -91,10 +91,10 @@ extern void guLookAtReflectF(float mf[4][4], LookAt* l, float xEye, float yEye,
+                              float zAt, float xUp, float yUp, float zUp);
+ extern void guLookAtHilite(Mtx* m, LookAt* l, Hilite* h, float xEye, float yEye, float zEye, float xAt, float yAt,
+                            float zAt, float xUp, float yUp, float zUp, float xl1, float yl1, float zl1, float xl2,
+-                           float yl2, float zl2, int twidth, int theight);
++                           float yl2, float zl2, s32 twidth, s32 theight);
+ extern void guLookAtHiliteF(float mf[4][4], LookAt* l, Hilite* h, float xEye, float yEye, float zEye, float xAt,
+                             float yAt, float zAt, float xUp, float yUp, float zUp, float xl1, float yl1, float zl1,
+-                            float xl2, float yl2, float zl2, int twidth, int theight);
++                            float xl2, float yl2, float zl2, s32 twidth, s32 theight);
+ extern void guLookAtStereo(Mtx* m, float xEye, float yEye, float zEye, float xAt, float yAt, float zAt, float xUp,
+                            float yUp, float zUp, float eyedist);
+ extern void guLookAtStereoF(float mf[4][4], float xEye, float yEye, float zEye, float xAt, float yAt, float zAt,
+@@ -125,7 +125,7 @@ extern void guNormalize(float* x, float* y, float* z);
+ void guPosLight(PositionalLight* pl, Light* l, float xOb, float yOb, float zOb);
+ void guPosLightHilite(PositionalLight* pl1, PositionalLight* pl2, Light* l1, Light* l2, LookAt* l, Hilite* h,
+                       float xEye, float yEye, float zEye, float xOb, float yOb, float zOb, float xUp, float yUp,
+-                      float zUp, int twidth, int theight);
++                      float zUp, s32 twidth, s32 theight);
+ extern int guRandom(void);
+ 
+ /*
+diff --git a/include/libultraship/libultra/interrupt.h b/include/libultraship/libultra/interrupt.h
+index 626ef41..c77a647 100644
+--- a/include/libultraship/libultra/interrupt.h
++++ b/include/libultraship/libultra/interrupt.h
+@@ -1,5 +1,9 @@
+ #pragma once
+ 
++// SoH-3DS: libultra spellings, so this header agrees with types.h.
++// devkitARM makes int32_t `long int`, which is a different type from s32.
++#include "types.h"
++
+ #include <stdint.h>
+ 
+-typedef uint32_t OSIntMask;
++typedef u32 OSIntMask;
+diff --git a/include/libultraship/libultra/message.h b/include/libultraship/libultra/message.h
+index dca268f..0c5e31a 100644
+--- a/include/libultraship/libultra/message.h
++++ b/include/libultraship/libultra/message.h
+@@ -1,3 +1,6 @@
++// SoH-3DS: libultra spellings, so this header agrees with types.h.
++// devkitARM makes int32_t `long int`, which is a different type from s32.
++#include "types.h"
+ #ifndef ULTRA64_MESSAGE_H
+ #define ULTRA64_MESSAGE_H
+ 
+@@ -55,10 +58,10 @@ typedef struct OSMesgQueue {
+ #ifdef __cplusplus
+ extern "C" {
+ #endif
+-void osCreateMesgQueue(OSMesgQueue* mq, OSMesg* msgBuf, int32_t count);
+-int32_t osSendMesg(OSMesgQueue* mq, OSMesg msg, int32_t flag);
+-int32_t osJamMesg(OSMesgQueue* mq, OSMesg msg, int32_t flag);
+-int32_t osRecvMesg(OSMesgQueue* mq, OSMesg* msg, int32_t flag);
++void osCreateMesgQueue(OSMesgQueue* mq, OSMesg* msgBuf, s32 count);
++s32 osSendMesg(OSMesgQueue* mq, OSMesg msg, s32 flag);
++s32 osJamMesg(OSMesgQueue* mq, OSMesg msg, s32 flag);
++s32 osRecvMesg(OSMesgQueue* mq, OSMesg* msg, s32 flag);
+ void osSetEventMesg(OSEvent event, OSMesgQueue* mq, OSMesg msg);
+ #ifdef __cplusplus
+ }
+diff --git a/include/libultraship/libultra/os.h b/include/libultraship/libultra/os.h
+index bd11553..cc3bc3d 100644
+--- a/include/libultraship/libultra/os.h
++++ b/include/libultraship/libultra/os.h
+@@ -1,5 +1,9 @@
+ #pragma once
+ 
++// SoH-3DS: libultra spellings, so this header agrees with types.h.
++// devkitARM makes int32_t `long int`, which is a different type from s32.
++#include "types.h"
++
+ #ifndef OS_H
+ #define OS_H
+ 
+@@ -102,15 +106,15 @@
+ extern "C" {
+ #endif
+ 
+-int32_t osContInit(OSMesgQueue* mq, uint8_t* controllerBits, OSContStatus* status);
+-int32_t osContStartReadData(OSMesgQueue* mesg);
++s32 osContInit(OSMesgQueue* mq, uint8_t* controllerBits, OSContStatus* status);
++s32 osContStartReadData(OSMesgQueue* mesg);
+ void osContGetReadData(OSContPad* pad);
+ uint8_t osContGetStatus(uint8_t controller);
+ 
+ void osWritebackDCacheAll();
+-void osInvalDCache(void* p, int32_t l);
+-void osInvalICache(void* p, int32_t x);
+-void osWritebackDCache(void* p, int32_t x);
++void osInvalDCache(void* p, s32 l);
++void osInvalICache(void* p, s32 x);
++void osWritebackDCache(void* p, s32 x);
+ 
+ s32 osPiStartDma(OSIoMesg* mb, s32 priority, s32 direction, uintptr_t devAddr, void* vAddr, size_t nbytes,
+                  OSMesgQueue* mq);
+@@ -127,15 +131,29 @@ void osCreateViManager(OSPri);
+ void osCreatePiManager(OSPri pri, OSMesgQueue* cmdQ, OSMesg* cmdBuf, s32 cmdMsgCnt);
+ 
+ void osSetTime(OSTime time);
++#ifdef __3DS__
++// SoH-3DS: libctru defines its own osGetTime() - milliseconds since epoch -
++// and its os.o is unavoidable because citro3d needs osConvertVirtToPhys from
++// the same object. N64's osGetTime is a 46.875 MHz counter, so the two are not
++// interchangeable and cannot share a symbol.
++//
++// Rename ours and let the macro rewrite both this declaration and the definition
++// in os.cpp, which includes this header. Verified that no translation unit
++// includes both <3ds.h> and this header, so libctru's own declaration is never
++// caught by the macro.
++uint64_t lus_osGetTime(void);
++#define osGetTime lus_osGetTime
++#else
+ uint64_t osGetTime(void);
+-uint32_t osGetCount(void);
++#endif
++u32 osGetCount(void);
+ s32 osEepromProbe(OSMesgQueue*);
+ s32 osEepromRead(OSMesgQueue*, u8, u8*);
+ s32 osEepromWrite(OSMesgQueue*, u8, u8*);
+-s32 osEepromLongRead(OSMesgQueue*, u8, u8*, int);
+-s32 osEepromLongWrite(OSMesgQueue*, u8, u8*, int);
++s32 osEepromLongRead(OSMesgQueue*, u8, u8*, s32);
++s32 osEepromLongWrite(OSMesgQueue*, u8, u8*, s32);
+ 
+-int osSetTimer(OSTimer* t, OSTime countdown, OSTime interval, OSMesgQueue* mq, OSMesg msg);
++s32 osSetTimer(OSTimer* t, OSTime countdown, OSTime interval, OSMesgQueue* mq, OSMesg msg);
+ 
+ s32 osAiSetFrequency(u32 freq);
+ OSPiHandle* osCartRomInit(void);
+diff --git a/include/libultraship/libultra/types.h b/include/libultraship/libultra/types.h
+index 3bdb4d3..dace50c 100644
+--- a/include/libultraship/libultra/types.h
++++ b/include/libultraship/libultra/types.h
+@@ -5,6 +5,17 @@
+ #include <stdbool.h>
+ #include <fast/types.h>
+ 
++// SoH-3DS: these MUST stay as builtin spellings.
++//
++// devkitARM's newlib makes uint32_t `unsigned long int` while uintptr_t is
++// `unsigned int`. The OoT decomp assigns between u32 and uintptr_t constantly
++// (audio heap, stack check, relocation), so spelling u32 as uint32_t makes
++// those distinct pointer types and produces ~6000 errors across soh/src.
++// `unsigned int` is 32 bits under the ARM EABI, so this is ABI-identical and
++// matches every other platform SoH targets.
++//
++// The mirror-image problem - libultraship headers that spell the same libultra
++// APIs as intN_t - is fixed at those headers, so the whole tree agrees on s32.
+ typedef signed char s8;
+ typedef unsigned char u8;
+ typedef signed short int s16;
+diff --git a/include/ship/audio/CoreAudioAudioPlayer.h b/include/ship/audio/CoreAudioAudioPlayer.h
+index edbe9a8..72d2035 100644
+--- a/include/ship/audio/CoreAudioAudioPlayer.h
++++ b/include/ship/audio/CoreAudioAudioPlayer.h
+@@ -29,7 +29,7 @@ class CoreAudioAudioPlayer : public AudioPlayer {
+     /**
+      * @brief Returns the number of audio frames currently queued in the ring buffer.
+      */
+-    int Buffered() override;
++    int32_t Buffered() override;
+ 
+   protected:
+     /**
+diff --git a/include/ship/audio/NdspAudioPlayer.h b/include/ship/audio/NdspAudioPlayer.h
+new file mode 100644
+index 0000000..bae25c7
+--- /dev/null
++++ b/include/ship/audio/NdspAudioPlayer.h
+@@ -0,0 +1,37 @@
++#pragma once
++
++#include "ship/audio/AudioPlayer.h"
++
++namespace Ship {
++
++/**
++ * @brief Direct NDSP audio output for the Nintendo 3DS.
++ *
++ * SoH-3DS: modeled on mario-kart-64-3ds's audio backend. SDL2's 3DS audio
++ * driver also sits on NDSP, but adds its own mixer thread, ring buffer and an
++ * extra copy, and SDL_GetQueuedAudioSize cannot see how much of the playing
++ * wave NDSP has already consumed - so pacing ran on stale numbers. This player
++ * queues the game's stereo PCM16 batches straight into a linear-memory wave
++ * pool and reports buffered depth from NDSP's own playback position.
++ *
++ * All NDSP state lives in the translation unit, keeping <3ds.h> (whose u32/s32
++ * typedefs collide with libultra's) out of this header.
++ */
++class NdspAudioPlayer final : public AudioPlayer {
++  public:
++    using AudioPlayer::AudioPlayer;
++    ~NdspAudioPlayer();
++
++    /** @brief Frames still unplayed: queued waves plus the remainder of the playing wave. */
++    int32_t Buffered() override;
++
++  protected:
++    /** @brief ndspInit (requires sdmc:/3ds/dspfirm.cdc), wave pool allocation, channel setup. */
++    bool DoInit() override;
++    /** @brief Stops the channel and releases the wave pool. */
++    void DoClose() override;
++    /** @brief Copies one stereo PCM16 batch into a free wave and queues it. */
++    void DoPlay(const uint8_t* buf, size_t len) override;
++};
++
++} // namespace Ship
+diff --git a/include/ship/audio/NullAudioPlayer.h b/include/ship/audio/NullAudioPlayer.h
+index 98a27b5..302d3ff 100644
+--- a/include/ship/audio/NullAudioPlayer.h
++++ b/include/ship/audio/NullAudioPlayer.h
+@@ -25,7 +25,7 @@ class NullAudioPlayer final : public AudioPlayer {
+     /**
+      * @brief Returns the desired buffered frame count so the game always produces audio.
+      */
+-    int Buffered() override;
++    int32_t Buffered() override;
+ 
+   protected:
+     /** @brief Always returns true — no actual device needs to be opened. */
+diff --git a/include/ship/audio/SDLAudioPlayer.h b/include/ship/audio/SDLAudioPlayer.h
+index ac61dd3..bcb7575 100644
+--- a/include/ship/audio/SDLAudioPlayer.h
++++ b/include/ship/audio/SDLAudioPlayer.h
+@@ -27,7 +27,7 @@ class SDLAudioPlayer final : public AudioPlayer {
+      *
+      * Used by the audio subsystem to decide how many frames to produce per game tick.
+      */
+-    int Buffered() override;
++    int32_t Buffered() override;
+ 
+   protected:
+     /**
+diff --git a/include/ship/audio/WasapiAudioPlayer.h b/include/ship/audio/WasapiAudioPlayer.h
+index 4bda387..56985a3 100644
+--- a/include/ship/audio/WasapiAudioPlayer.h
++++ b/include/ship/audio/WasapiAudioPlayer.h
+@@ -40,7 +40,7 @@ class WasapiAudioPlayer : public AudioPlayer, public IMMNotificationClient {
+      * Used by the audio subsystem to pace audio production. While the device cannot
+      * be opened, reports the buffer as full so the producer backs off.
+      */
+-    int Buffered() override;
++    int32_t Buffered() override;
+ 
+   protected:
+     /**
+diff --git a/include/ship/resource/archive/Archive.h b/include/ship/resource/archive/Archive.h
+index 8771820..e588ffd 100644
+--- a/include/ship/resource/archive/Archive.h
++++ b/include/ship/resource/archive/Archive.h
+@@ -102,6 +102,14 @@ class Archive : public std::enable_shared_from_this<Archive> {
+      * @brief Returns a map of all files indexed in this archive (hash → path).
+      * @return Shared pointer to the complete hash→path map.
+      */
++    /**
++     * @brief Looks up the indexed path for a hash, or nullptr when absent.
++     *
++     * The archive owns the authoritative hash->path index, so callers should ask
++     * here rather than keeping a parallel copy of every path.
++     */
++    const std::string* HashToString(uint64_t hash) const;
++
+     std::shared_ptr<std::unordered_map<uint64_t, std::string>> ListFiles();
+ 
+     /**
+diff --git a/include/ship/resource/archive/ArchiveManager.h b/include/ship/resource/archive/ArchiveManager.h
+index 1c01746..0a8c510 100644
+--- a/include/ship/resource/archive/ArchiveManager.h
++++ b/include/ship/resource/archive/ArchiveManager.h
+@@ -231,9 +231,18 @@ class ArchiveManager {
+     std::vector<std::shared_ptr<Archive>> mArchives;
+     std::vector<uint32_t> mGameVersions;
+     std::unordered_set<uint32_t> mValidGameVersions;
+-    std::unordered_map<uint64_t, std::string> mHashes;
+     std::unordered_set<std::string> mDirectories;
+-    std::unordered_map<uint64_t, std::shared_ptr<Archive>> mFileToArchive;
++
++    // Removed: two per-file maps that duplicated what the archives already hold -
++    // a hash->path map (~40k extra std::strings) and a hash->archive map (~40k
++    // shared_ptr nodes). Together roughly 9 MB on a vanilla OoT archive, which
++    // matters because zip_fopen_index needs a ~44 KB zlib inflate window per
++    // read; once the heap is that tight libzip starts returning "Malloc failure"
++    // and textures silently fail to load.
++    //
++    // Every archive indexes its own files, so the owner is found by asking them
++    // in descending priority order.
++    std::shared_ptr<Archive> ResolveArchive(uint64_t hash) const;
+ #ifdef ENABLE_SCRIPTING
+     UntrustedArchiveHandler mUntrustedArchiveHandler;
+ #endif
+diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
+index 45989b6..acb9f72 100644
+--- a/src/CMakeLists.txt
++++ b/src/CMakeLists.txt
+@@ -203,7 +203,11 @@ if (CMAKE_SYSTEM_NAME STREQUAL "iOS")
+     endif()
+ else()
+     target_compile_definitions(libultraship PRIVATE
+-        ENABLE_OPENGL
++        # SoH-3DS: PICA200 has no OpenGL. Defining ENABLE_OPENGL makes
++        # Fast3dWindow::InitWindowManager reference GfxRenderingAPIOGL and
++        # GfxWindowBackendSDL2, whose translation units are excluded on 3DS, so
++        # the vtables come out undefined at link time.
++        $<$<NOT:$<BOOL:${N3DS_BUILD}>>:ENABLE_OPENGL>
+         $<$<CONFIG:Debug>:_DEBUG>
+         $<$<NOT:$<CONFIG:Debug>>:NDEBUG>
+         SPDLOG_ACTIVE_LEVEL=${SPDLOG_MIN_CUTOFF}
+diff --git a/src/fast/CMakeLists.txt b/src/fast/CMakeLists.txt
+index 66bf70d..9462c43 100644
+--- a/src/fast/CMakeLists.txt
++++ b/src/fast/CMakeLists.txt
+@@ -39,5 +39,13 @@ if (CMAKE_SYSTEM_NAME STREQUAL "iOS")
+     list(FILTER Source_Files__Graphic EXCLUDE REGEX "graphic/Fast3D/backends/gfx_opengl*")
+ endif()
+ 
++
++# SoH-3DS: PICA200 has no OpenGL and the 3DS has no dlfcn/GLES2 headers, so the
++# OpenGL backend cannot compile. The 3DS supplies gfx_citro3d instead.
++if(N3DS)
++    list(FILTER Source_Files__Graphic EXCLUDE REGEX "gfx_opengl")
++    list(FILTER Source_Files__Graphic EXCLUDE REGEX "gfx_sdl2")
++endif()
++
+ source_group("graphic" FILES ${Source_Files__Graphic})
+ target_sources(libultraship PRIVATE ${Source_Files__Graphic})
+diff --git a/src/fast/Fast3dGui.cpp b/src/fast/Fast3dGui.cpp
+index 237a502..0fc7412 100644
+--- a/src/fast/Fast3dGui.cpp
++++ b/src/fast/Fast3dGui.cpp
+@@ -24,7 +24,12 @@
+ #include "ship/port/mobile/MobileImpl.h"
+ #endif
+ 
+-#ifdef ENABLE_OPENGL
++#if defined(ENABLE_OPENGL) || defined(__3DS__)
++// SoH-3DS: headers only. The FAST3D_SDL_OPENGL and FAST3D_SDL_METAL cases below
++// are not #ifdef'd, so they must still compile even where no SDL/GL ImGui
++// backend exists. They are never *selected* on 3DS - the only registered
++// backend is FAST3D_CITRO3D - and the port supplies no-op definitions so the
++// link stays honest about which of these are real.
+ #include <imgui_impl_opengl3.h>
+ #include <imgui_impl_sdl2.h>
+ #endif
+@@ -274,6 +279,10 @@ void Fast3dGui::ImGuiRenderDrawData(ImDrawData* data) {
+ }
+ 
+ void Fast3dGui::DrawFloatingWindows() {
++#ifdef __3DS__
++    // ImGui is not used on this port; nothing renders these.
++    return;
++#endif
+     if (!(ImGui::GetIO().ConfigFlags & ImGuiConfigFlags_ViewportsEnable)) {
+         return;
+     }
+@@ -360,6 +369,12 @@ void Fast3dGui::CalculateGameViewport() {
+ }
+ 
+ void Fast3dGui::DrawGame() {
++#ifdef __3DS__
++    // The game is presented directly to the top screen by the citro3d backend,
++    // so there is no framebuffer to blit into an ImGui window. This was the
++    // source of ImGui::Begin("Main Game") and the GameOverlay draw calls.
++    return;
++#endif
+     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+     ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+     ImGui::PushStyleVar(ImGuiStyleVar_ChildBorderSize, 0.0f);
+@@ -577,7 +592,20 @@ void Fast3dGui::LoadTextureFromResource(const std::string& name, std::shared_ptr
+ 
+ void Fast3dGui::LoadGuiTexture(const std::string& name, const Fast::Texture& res, const std::string& palettePath,
+                                const ImVec4& tint) {
+-    GfxRenderingAPI* api = mInterpreter.lock()->GetCurrentRenderingAPI();
++    // mInterpreter is a weak_ptr, so operator-> on an expired one invokes a
++    // member function with a null `this` and faults reading its first field
++    // instead of reporting anything. It is assigned only in ImGuiBackendInit, so
++    // any call ordered before that lands here.
++    const auto interpreter = mInterpreter.lock();
++    if (interpreter == nullptr) {
++        SPDLOG_WARN("ImGui::ResourceLoad: no Fast3D interpreter yet; skipping GUI texture \"{}\"", name);
++        return;
++    }
++    GfxRenderingAPI* api = interpreter->GetCurrentRenderingAPI();
++    if (api == nullptr) {
++        SPDLOG_WARN("ImGui::ResourceLoad: no rendering API; skipping GUI texture \"{}\"", name);
++        return;
++    }
+     std::vector<uint8_t> texBuffer;
+     texBuffer.reserve(res.Width * res.Height * 4);
+ 
+@@ -755,8 +783,19 @@ void Fast3dGui::LoadGuiTexture(const std::string& name, const Fast::Texture& res
+ 
+ void Fast3dGui::LoadGuiTexture(const std::string& name, const std::string& path, const std::string& palettePath,
+                                const ImVec4& tint) {
+-    const auto res = static_cast<Fast::Texture*>(
+-        Ship::Context::GetRawInstance()->GetResourceManager()->LoadResource(path, true).get());
++    // Hold the shared_ptr for the duration of the call. `LoadResource(...).get()`
++    // returned a raw pointer into a temporary that was released at the end of
++    // that statement, so the pointer only stayed valid while the resource cache
++    // happened to retain it.
++    const auto resource = Ship::Context::GetRawInstance()->GetResourceManager()->LoadResource(path, true);
++    const auto res = std::static_pointer_cast<Fast::Texture>(resource);
++    if (res == nullptr) {
++        // A GUI texture that is not in the mounted archives is a missing asset,
++        // not a fatal condition: dereferencing here read offsets off a null
++        // Texture and faulted. Skip the entry and name it so it can be found.
++        SPDLOG_WARN("ImGui::ResourceLoad: no texture resource at \"{}\" (requested as \"{}\")", path, name);
++        return;
++    }
+ 
+     LoadGuiTexture(name, *res, palettePath, tint);
+ }
+diff --git a/src/fast/Fast3dWindow.cpp b/src/fast/Fast3dWindow.cpp
+index 2b77a5f..5c62df8 100644
+--- a/src/fast/Fast3dWindow.cpp
++++ b/src/fast/Fast3dWindow.cpp
+@@ -36,7 +36,14 @@ Fast3dWindow::Fast3dWindow(std::shared_ptr<Ship::Gui> gui, std::shared_ptr<FastM
+         AddAvailableWindowBackend(WindowBackend::FAST3D_SDL_METAL);
+     }
+ #endif
++#ifdef __3DS__
++    // SoH-3DS: citro3d is the only backend on this hardware. Registering it as
++    // the sole option also makes it what GetSavedWindowBackend falls back to, so
++    // a config carried over from a desktop install cannot select OpenGL.
++    AddAvailableWindowBackend(WindowBackend::FAST3D_CITRO3D);
++#else
+     AddAvailableWindowBackend(WindowBackend::FAST3D_SDL_OPENGL);
++#endif
+ }
+ 
+ Fast3dWindow::Fast3dWindow(std::shared_ptr<Ship::Gui> gui)
+@@ -133,10 +140,25 @@ uint16_t Fast3dWindow::GetPixelDepth(float x, float y) {
+     return mInterpreter->GetPixelDepth(x, y);
+ }
+ 
++#ifdef __3DS__
++// Supplied by the port (src/pica/gfx_citro3d.cpp, src/pica/gfx_ctr_window.cpp).
++extern GfxRenderingAPI* CreateCitro3DRenderingAPI();
++extern GfxWindowBackend* CreateCtrWindowBackend();
++#endif
++
+ void Fast3dWindow::InitWindowManager() {
+     SetWindowBackend(GetSavedWindowBackend());
+ 
+     switch (GetWindowBackend()) {
++#ifdef __3DS__
++        // SoH-3DS: the PICA200 backend lives in the port rather than here, so it
++        // is reached through factory hooks. That keeps libultraship free of any
++        // include dependency on citro3d while still owning backend selection.
++        case WindowBackend::FAST3D_CITRO3D:
++            mRenderingApi = CreateCitro3DRenderingAPI();
++            mWindowManagerApi = CreateCtrWindowBackend();
++            break;
++#endif
+ #ifdef ENABLE_DX11
+         case WindowBackend::FAST3D_DXGI_DX11:
+             mWindowManagerApi = new GfxWindowBackendDXGI();
+@@ -209,7 +231,19 @@ bool Fast3dWindow::DrawAndRunGraphicsCommands(Gfx* commands, const std::unordere
+     // Setup game framebuffers to match available window space
+     mInterpreter->StartFrame();
+     // Execute the games gfx commands
++#ifdef __3DS__
++    // SoH-3DS: the citro3d backend throws (bad_alloc on texture-init failure,
++    // length_error on vertex-buffer exhaustion). Losing one frame's draws is
++    // strictly better than std::terminate mid-game; the backend's own state
++    // stays consistent because EndFrame still runs below.
++    try {
++        mInterpreter->Run(commands, mtxReplacements);
++    } catch (const std::exception& e) {
++        std::fprintf(stderr, "gfx: frame dropped: %s\n", e.what());
++    }
++#else
+     mInterpreter->Run(commands, mtxReplacements);
++#endif
+     // Renders the game frame buffer to the final window and finishes the GUI
+     gui->EndDraw();
+     // Finalize swap buffers
+@@ -344,7 +378,7 @@ const char* Fast3dWindow::GetKeyName(int32_t scancode) {
+     return mWindowManagerApi->GetKeyName(scancode);
+ }
+ 
+-bool Fast3dWindow::KeyUp(int32_t scancode) {
++bool Fast3dWindow::KeyUp(int scancode) {
+     if (scancode == Ship::Context::GetRawInstance()->GetWindow()->GetFullscreenScancode()) {
+         Ship::Context::GetRawInstance()->GetWindow()->ToggleFullscreen();
+     }
+@@ -358,7 +392,7 @@ bool Fast3dWindow::KeyUp(int32_t scancode) {
+         Ship::KbEventType::LUS_KB_EVENT_KEY_UP, static_cast<Ship::KbScancode>(scancode));
+ }
+ 
+-bool Fast3dWindow::KeyDown(int32_t scancode) {
++bool Fast3dWindow::KeyDown(int scancode) {
+     bool isProcessed = Ship::Context::GetRawInstance()->GetControlDeck()->ProcessKeyboardEvent(
+         Ship::KbEventType::LUS_KB_EVENT_KEY_DOWN, static_cast<Ship::KbScancode>(scancode));
+     Ship::Context::GetRawInstance()->GetWindow()->SetLastScancode(scancode);
+diff --git a/src/fast/interpreter.cpp b/src/fast/interpreter.cpp
+index 2b51ad7..dbddb11 100644
+--- a/src/fast/interpreter.cpp
++++ b/src/fast/interpreter.cpp
+@@ -7,7 +7,9 @@
+ #include <stdbool.h>
+ #include <assert.h>
+ #include <stdio.h>
+-#ifndef _WIN32
++// SoH-3DS: no dlfcn on 3DS (no dynamic loading). Unconditional #ifndef _WIN32
++// assumes every non-Windows target is POSIX-with-dlopen.
++#if !defined(_WIN32) && !defined(__3DS__)
+ #include <dlfcn.h>
+ #endif
+ 
+@@ -126,9 +128,15 @@ Interpreter::~Interpreter() {
+ }
+ 
+ static std::weak_ptr<Interpreter> mInstance;
++// SoH-3DS: display-list handlers run thousands of times per frame; a
++// weak_ptr::lock per command costs two atomic RMW loops (ldrex/strex) plus a
++// shared_ptr release on a 268 MHz ARM11. The interpreter outlives every
++// display list it runs, so handlers read this raw pointer instead.
++static Interpreter* sInterpreterRaw = nullptr;
+ // Set a cached pointer to the instance so we don't need to go through the window every time
+ void GfxSetInstance(std::shared_ptr<Interpreter> gfx) {
+     mInstance = gfx;
++    sInterpreterRaw = gfx.get();
+ }
+ 
+ // N64 prim_depth is 15-bit (0 near, 0x7FFF far).
+@@ -172,7 +180,7 @@ const char* Interpreter::CCMUXtoStr(uint32_t ccmux) {
+         "G_CCMUX_PRIM_LOD_FRAC",
+         "G_CCMUX_K5",
+     };
+-    if (ccmux > tbl.size()) {
++    if (ccmux >= tbl.size()) {
+         return "G_CCMUX_0";
+     }
+     return tbl[ccmux];
+@@ -1254,7 +1262,6 @@ void Interpreter::ImportTexture(int i, int tile, bool importReplacement) {
+     uint32_t tmemIdex = mRdp->texture_tile[tile].tmem_index;
+     uint8_t paletteIndex = mRdp->texture_tile[tile].palette;
+     uint32_t origSizeBytes = mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index].orig_size_bytes;
+-
+     const RawTexMetadata* metadata = &mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index].raw_tex_metadata;
+     const uint8_t* origAddr =
+         importReplacement && (metadata->resource != nullptr)
+@@ -1333,6 +1340,85 @@ void Interpreter::ImportTexture(int i, int tile, bool importReplacement) {
+         return;
+     }
+ 
++    // SoH-3DS: never decode more bytes than the asset actually holds, and take
++    // its geometry from the asset rather than the display list.
++    //
++    // The DL's SETTIMG word size can exceed the extracted asset's: OoT's title
++    // glow tiles are Grayscale8bpp 32x32 in the archive (1024 bytes) but are
++    // loaded as 32 texels << 16-bit x 32 rows = 2048 bytes, so half of every
++    // texture came from whatever follows the asset in memory - deterministic
++    // garbage, which is why those tiles decoded to 67 arbitrary colours.
++    // ImportTextureRaw already clamps this way for HD replacements; the normal
++    // import paths did not.
++    {
++        const Fast::TextureType resType = metadata->type;
++        uint32_t resBits = 0;
++        switch (resType) {
++            case Fast::TextureType::RGBA32bpp:
++                resBits = 32;
++                break;
++            case Fast::TextureType::RGBA16bpp:
++            case Fast::TextureType::GrayscaleAlpha16bpp:
++                resBits = 16;
++                break;
++            case Fast::TextureType::Palette8bpp:
++            case Fast::TextureType::Grayscale8bpp:
++            case Fast::TextureType::GrayscaleAlpha8bpp:
++                resBits = 8;
++                break;
++            case Fast::TextureType::Palette4bpp:
++            case Fast::TextureType::Grayscale4bpp:
++            case Fast::TextureType::GrayscaleAlpha4bpp:
++                resBits = 4;
++                break;
++            default:
++                break;
++        }
++        if (resBits != 0 && metadata->width > 0 && metadata->height > 0 &&
++            metadata->h_byte_scale == 1 && metadata->v_pixel_scale == 1) {
++            auto& lt = mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index];
++            const uint32_t resLine = (metadata->width * resBits) / 8u;
++            const uint32_t resBytes = resLine * metadata->height;
++            if (resBytes != 0 && lt.size_bytes > resBytes) {
++                lt.size_bytes = resBytes;
++                lt.line_size_bytes = resLine;
++                lt.full_image_line_size_bytes = resLine;
++            }
++        }
++    }
++
++    // SoH-3DS: the resource declares its own format and that is authoritative.
++    // The tile's fmt/siz come from the display list and can be stale. OoT's nine
++    // title effect masks (objects/object_mag/gTitleEffectMask{0..2}{0..2}Tex) are
++    // Grayscale4bpp 64x64 in the archive, yet arrive here with the tile claiming
++    // CI/8b, so 2048 bytes of intensity get read as 2048 palette indices: 67
++    // arbitrary colours with 1-bit alpha instead of a smooth mask, drawn as the
++    // opaque discs over the title logo. Palette and intensity formats are never
++    // interchangeable, so when the resource says intensity and the tile says
++    // palette, follow the resource. ImportTextureRaw already does exactly this
++    // for the CI cases.
++    if (fmt == G_IM_FMT_CI) {
++        switch (mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index].raw_tex_metadata.type) {
++            case Fast::TextureType::Grayscale4bpp:
++                ImportTextureI4(tile, importReplacement);
++                return;
++            case Fast::TextureType::Grayscale8bpp:
++                ImportTextureI8(tile, importReplacement);
++                return;
++            case Fast::TextureType::GrayscaleAlpha4bpp:
++                ImportTextureIA4(tile, importReplacement);
++                return;
++            case Fast::TextureType::GrayscaleAlpha8bpp:
++                ImportTextureIA8(tile, importReplacement);
++                return;
++            case Fast::TextureType::GrayscaleAlpha16bpp:
++                ImportTextureIA16(tile, importReplacement);
++                return;
++            default:
++                break;
++        }
++    }
++
+     switch (fmt) {
+         case G_IM_FMT_RGBA:
+             if (siz == G_IM_SIZ_16b) {
+@@ -1482,9 +1568,21 @@ void Interpreter::CalculateNormalDir(const F3DLight_t* light, float coeffs[3]) {
+     Interpreter::NormalizeVector(coeffs);
+ }
+ 
++// SoH-3DS: defined later in this file; used by the matrix/movemem guards
++// below (the SETTIMG path already had it).
++static bool IsValidResolvedAddress(uintptr_t addr);
++
+ void Interpreter::GfxSpMatrix(uint8_t parameters, const int32_t* addr) {
+     float matrix[4][4];
+ 
++    // SoH-3DS: addr went through SegAddr, whose fallback returns the raw
++    // segmented word when the segment is unset - indistinguishable from a
++    // valid pointer. The 64-byte read below data-aborts on such an address;
++    // the SETTIMG path already guards exactly this way.
++    if (addr == nullptr || !IsValidResolvedAddress((uintptr_t)addr)) {
++        return;
++    }
++
+     if (auto it = mCurMtxReplacements->find((Mtx*)addr); it != mCurMtxReplacements->end()) {
+         for (int i = 0; i < 4; i++) {
+             for (int j = 0; j < 4; j++) {
+@@ -1541,7 +1639,7 @@ void Interpreter::GfxSpMatrix(uint8_t parameters, const int32_t* addr) {
+ 
+ void Interpreter::GfxSpPopMatrix(uint32_t count) {
+     while (count--) {
+-        if (mRsp->modelview_matrix_stack_size > 0) {
++        if (mRsp->modelview_matrix_stack_size > 1) {
+             --mRsp->modelview_matrix_stack_size;
+             if (mRsp->modelview_matrix_stack_size > 0) {
+                 MatrixMul(mRsp->MP_matrix, mRsp->modelview_matrix_stack[mRsp->modelview_matrix_stack_size - 1],
+@@ -1559,7 +1657,16 @@ float Interpreter::AdjXForAspectRatio(float x) const {
+         (!mActiveFrameBuffer->second.resize || mActiveFrameBuffer->second.forceFixedAspect)) {
+         return x;
+     } else {
+-        return x * (4.0f / 3.0f) / ((float)mCurDimensions.width / (float)mCurDimensions.height);
++        // SoH-3DS: two fdivs per vertex replaced by one cached multiplier;
++        // dimensions change rarely (resize / advanced-resolution changes).
++        if (mCurDimensions.width != mAspectAdjustWidth || mCurDimensions.height != mAspectAdjustHeight) {
++            mAspectAdjustWidth = mCurDimensions.width;
++            mAspectAdjustHeight = mCurDimensions.height;
++            mAspectAdjustMultiplier = mCurDimensions.width != 0
++                                          ? (4.0f / 3.0f) * (float)mCurDimensions.height / (float)mCurDimensions.width
++                                          : 1.0f;
++        }
++        return x * mAspectAdjustMultiplier;
+     }
+ }
+ 
+@@ -1578,6 +1685,12 @@ void Interpreter::AdjustWidthHeightForScale(uint32_t& width, uint32_t& height, u
+ }
+ 
+ void Interpreter::GfxSpVertex(size_t n_vertices, size_t dest_index, const F3DVtx* vertices) {
++    // SoH-3DS: dest_index decodes from the DL and loaded_vertices is the LAST
++    // member of the heap-allocated RSP - an out-of-range index wrote past the
++    // allocation into libctru heap neighbors (thread blocks live there).
++    if (dest_index >= MAX_VERTICES + 4 || n_vertices > MAX_VERTICES + 4 - dest_index) {
++        return;
++    }
+     for (size_t i = 0; i < n_vertices; i++, dest_index++) {
+         const F3DVtx_t* v = &vertices[i].v;
+         const F3DVtx_tn* vn = &vertices[i].n;
+@@ -1668,7 +1781,7 @@ void Interpreter::GfxSpVertex(size_t n_vertices, size_t dest_index, const F3DVtx
+                     intensity += vn->n[0] * mRsp->current_lights_coeffs[i][0];
+                     intensity += vn->n[1] * mRsp->current_lights_coeffs[i][1];
+                     intensity += vn->n[2] * mRsp->current_lights_coeffs[i][2];
+-                    intensity /= 127.0f;
++                    intensity *= (1.0f / 127.0f);
+                 }
+                 if (intensity > 0.0f) {
+                     r += intensity * mRsp->current_lights[i].l.col[0];
+@@ -1690,8 +1803,8 @@ void Interpreter::GfxSpVertex(size_t n_vertices, size_t dest_index, const F3DVtx
+                 doty += vn->n[1] * mRsp->current_lookat_coeffs[1][1];
+                 doty += vn->n[2] * mRsp->current_lookat_coeffs[1][2];
+ 
+-                dotx /= 127.0f;
+-                doty /= 127.0f;
++                dotx *= (1.0f / 127.0f);
++                doty *= (1.0f / 127.0f);
+ 
+                 dotx = Ship::Math::clamp(dotx, -1.0f, 1.0f);
+                 doty = Ship::Math::clamp(doty, -1.0f, 1.0f);
+@@ -1771,6 +1884,9 @@ void Interpreter::GfxSpModifyVertex(uint16_t vtx_idx, uint8_t where, uint32_t va
+     int16_t s = (int16_t)(val >> 16);
+     int16_t t = (int16_t)val;
+ 
++    if (vtx_idx >= MAX_VERTICES + 4) {
++        return; // SoH-3DS: same bound as GfxSpVertex.
++    }
+     LoadedVertex* v = &mRsp->loaded_vertices[vtx_idx];
+     v->u = s;
+     v->v = t;
+@@ -1794,11 +1910,14 @@ void Interpreter::GfxSpTri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx
+     const uint32_t cull_back = get_attr(CULL_BACK);
+ 
+     if ((mRsp->geometry_mode & cull_both) != 0) {
+-        float dx1 = v1->x / (v1->w) - v2->x / (v2->w);
+-        float dy1 = v1->y / (v1->w) - v2->y / (v2->w);
+-        float dx2 = v3->x / (v3->w) - v2->x / (v2->w);
+-        float dy2 = v3->y / (v3->w) - v2->y / (v2->w);
+-        float cross = dx1 * dy2 - dy1 * dx2;
++        // SoH-3DS: sign-identical to the projected screen-space cross product
++        // without six VFP divides (~19 non-pipelined cycles each on ARM11):
++        // cross = N / (w1*w2^2*w3) and w2^2 > 0, so sign(cross) = sign(N*w1*w3).
++        const float ex1 = v1->x * v2->w - v2->x * v1->w;
++        const float ey1 = v1->y * v2->w - v2->y * v1->w;
++        const float ex2 = v3->x * v2->w - v2->x * v3->w;
++        const float ey2 = v3->y * v2->w - v2->y * v3->w;
++        float cross = (ex1 * ey2 - ey1 * ex2) * (v1->w * v3->w);
+ 
+         if ((v1->w < 0) ^ (v2->w < 0) ^ (v3->w < 0)) {
+             // If one vertex lies behind the eye, negating cross will give the correct result.
+@@ -2090,6 +2209,18 @@ void Interpreter::GfxSpTri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx
+ 
+     struct GfxClipParameters clip_parameters = mRapi->GetClipParameters();
+ 
++    // SoH-3DS: one reciprocal per texture per triangle instead of a VFP divide
++    // per vertex component (~19 non-pipelined cycles each). Division by zero
++    // previously produced inf; the reciprocal reproduces that.
++    float inv_tex_width[2];
++    float inv_tex_height[2];
++    for (int t = 0; t < 2; t++) {
++        if (usedTextures[t]) {
++            inv_tex_width[t] = 1.0f / (float)tex_width[t];
++            inv_tex_height[t] = 1.0f / (float)tex_height[t];
++        }
++    }
++
+     for (int i = 0; i < 3; i++) {
+         float z = v_arr[i]->z, w = v_arr[i]->w;
+         if (clip_parameters.z_is_from_0_to_1) {
+@@ -2105,8 +2236,8 @@ void Interpreter::GfxSpTri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx
+             if (!usedTextures[t]) {
+                 continue;
+             }
+-            float u = v_arr[i]->u / 32.0f;
+-            float v = v_arr[i]->v / 32.0f;
++            float u = v_arr[i]->u * (1.0f / 32.0f);
++            float v = v_arr[i]->v * (1.0f / 32.0f);
+ 
+             uint32_t uv_tile = effective_tile[t];
+             int shifts = mRdp->texture_tile[uv_tile].shifts;
+@@ -2137,18 +2268,18 @@ void Interpreter::GfxSpTri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx
+                 }
+             }
+ 
+-            mBufVbo[mBufVboLen++] = u / tex_width[t];
+-            mBufVbo[mBufVboLen++] = v / tex_height[t];
++            mBufVbo[mBufVboLen++] = u * inv_tex_width[t];
++            mBufVbo[mBufVboLen++] = v * inv_tex_height[t];
+ 
+             bool clampS = tm & (1 << 2 * t);
+             bool clampT = tm & (1 << 2 * t + 1);
+ 
+             if (clampS) {
+-                mBufVbo[mBufVboLen++] = (tex_width2[t] - 0.5f) / tex_width[t];
++                mBufVbo[mBufVboLen++] = (tex_width2[t] - 0.5f) * inv_tex_width[t];
+             }
+ 
+             if (clampT) {
+-                mBufVbo[mBufVboLen++] = (tex_height2[t] - 0.5f) / tex_height[t];
++                mBufVbo[mBufVboLen++] = (tex_height2[t] - 0.5f) * inv_tex_height[t];
+             }
+         }
+ 
+@@ -2338,9 +2469,15 @@ void Interpreter::CalcAndSetViewport(const F3DVp_t* viewport) {
+ void Interpreter::GfxSpMovememF3dex2(uint8_t index, uint8_t offset, const void* data) {
+     switch (index) {
+         case F3DEX2_G_MV_VIEWPORT:
++            if (!IsValidResolvedAddress((uintptr_t)data)) {
++                break;
++            }
+             CalcAndSetViewport((const F3DVp_t*)data);
+             break;
+         case F3DEX2_G_MV_LIGHT: {
++            if (!IsValidResolvedAddress((uintptr_t)data)) {
++                break;
++            }
+             int lightidx = offset / 24 - 2;
+             if (lightidx >= 0 && lightidx <= MAX_LIGHTS) { // skip lookat
+                 // NOTE: reads out of bounds if it is an ambient light
+@@ -2356,6 +2493,9 @@ void Interpreter::GfxSpMovememF3dex2(uint8_t index, uint8_t offset, const void*
+ void Interpreter::GfxSpMovememF3d(uint8_t index, uint8_t offset, const void* data) {
+     switch (index) {
+         case F3DEX_G_MV_VIEWPORT:
++            if (!IsValidResolvedAddress((uintptr_t)data)) {
++                break;
++            }
+             CalcAndSetViewport((const F3DVp_t*)data);
+             break;
+         case F3DEX_G_MV_LOOKATY:
+@@ -2380,6 +2520,10 @@ void Interpreter::GfxSpMovewordF3dex2(uint8_t index, uint16_t offset, uintptr_t
+     switch (index) {
+         case G_MW_NUMLIGHT:
+             mRsp->current_num_lights = data / 24 + 1; // add ambient light
++            // SoH-3DS: DL-word controlled; clamp to the stack arrays.
++            if (mRsp->current_num_lights > MAX_LIGHTS) {
++                mRsp->current_num_lights = MAX_LIGHTS;
++            }
+             mRsp->lights_changed = true;
+             break;
+         case G_MW_FOG:
+@@ -2406,6 +2550,10 @@ void Interpreter::GfxSpMovewordF3d(uint8_t index, uint16_t offset, uintptr_t dat
+             // Ambient light is included
+             // The 31st bit is a flag that lights should be recalculated
+             mRsp->current_num_lights = (data - 0x80000000U) / 32;
++            // SoH-3DS: DL-word controlled; clamp to the stack arrays.
++            if (mRsp->current_num_lights > MAX_LIGHTS) {
++                mRsp->current_num_lights = MAX_LIGHTS;
++            }
+             mRsp->lights_changed = true;
+             break;
+         case G_MW_FOG:
+@@ -2512,6 +2660,12 @@ void Interpreter::GfxDpLoadTlut(uint8_t tile, uint32_t high_index) {
+ 
+     uint16_t tmem = mRdp->texture_tile[tile].tmem;
+     const uint8_t* src = mRdp->texture_to_load.addr;
++
++    // SoH-3DS: a LOADTLUT with no prior SETTIMG (or a failed image load)
++    // arrives with a null source; the copies below would deref it.
++    if (src == nullptr) {
++        return;
++    }
+     uint32_t entryCount = high_index + 1;
+     uint32_t byteCount = entryCount * 2;
+ 
+@@ -2542,8 +2696,13 @@ void Interpreter::GfxDpLoadTlut(uint8_t tile, uint32_t high_index) {
+             mRdp->palette_dram_addr[1] = src;
+         }
+     } else {
+-        // tmem < 256: non-standard location, fall back to direct pointer
+-        mRdp->palettes[1] = src;
++        // tmem < 256: non-standard location. Copy into staging like every
++        // other path so no raw resource pointer is cached across frames
++        // (the old direct-pointer fallback dangled after eviction and was
++        // deref'd per texel at import time).
++        uint32_t copyLen = byteCount < 256 ? byteCount : 256;
++        memcpy(mRdp->palette_staging[1], src, copyLen);
++        mRdp->palettes[1] = mRdp->palette_staging[1];
+         mRdp->palette_dram_addr[1] = src;
+     }
+ }
+@@ -2667,6 +2826,20 @@ void Interpreter::GfxDpLoadTile(uint8_t tile, uint32_t uls, uint32_t ult, uint32
+     uint32_t tile_line_size_bytes = tile_width << word_size_shift;
+     uint32_t full_image_line_size_bytes = full_image_width << word_size_shift;
+ 
++    // SoH-3DS: a full image narrower than the tile being extracted from it is
++    // impossible. It means the display list used the LOADBLOCK idiom, where
++    // gsDPSetTextureImage(fmt, siz, 1, timg) passes 1 as a placeholder because
++    // the image width is meaningless for a block load. Deriving a real stride
++    // from that placeholder yields full_image_line_size_bytes = 1 << shift,
++    // and every import loop then advances rows by
++    // (full_image_line_size_bytes - line_size_bytes), which underflows uint32_t
++    // and shears each row against the previous one - the source of the
++    // scrambled OoT title-sequence tiles (fullW=1, tileW=192, 16-bit: stride 2
++    // against a 384-byte line). Contiguous is the only consistent reading.
++    if (full_image_line_size_bytes < tile_line_size_bytes) {
++        full_image_line_size_bytes = tile_line_size_bytes;
++    }
++
+     uint32_t orig_size_bytes = tile_line_size_bytes * tile_height;
+     uint32_t size_bytes = orig_size_bytes;
+     uint32_t start_offset_bytes = full_image_line_size_bytes * offset_y + offset_x_in_bytes;
+@@ -3108,6 +3281,14 @@ void Interpreter::Gfxs2dexBgCopy(F3DuObjBg* bg) {
+     bg->b.imageFlip = 0;
+     */
+ 
++    // SoH-3DS: a room whose background blob failed a transient (heap-ceiling)
++    // load reaches here with a null bg / null imagePtr; reading fields off it
++    // was 560 unmapped reads per emulator run. Skip the copy this frame -
++    // the load retries next frame (transient failures are retryable).
++    if (bg == nullptr || bg->b.imagePtr == 0) {
++        return;
++    }
++
+     uintptr_t data = (uintptr_t)bg->b.imagePtr;
+ 
+     uint32_t texFlags = 0;
+@@ -3116,6 +3297,12 @@ void Interpreter::Gfxs2dexBgCopy(F3DuObjBg* bg) {
+     if ((bool)gfx_check_image_signature((char*)data)) {
+         std::shared_ptr<Fast::Texture> tex = std::static_pointer_cast<Fast::Texture>(
+             Ship::Context::GetRawInstance()->GetResourceManager()->LoadResourceProcess((char*)data));
++        if (tex == nullptr) {
++            // Transient load failure at the heap ceiling - skip this frame,
++            // the load retries next execution (same class as the null-bg
++            // guard above).
++            return;
++        }
+         texFlags = tex->Flags;
+         rawTexMetadata.width = tex->Width;
+         rawTexMetadata.height = tex->Height;
+@@ -3145,6 +3332,10 @@ void Interpreter::Gfxs2dexBgCopy(F3DuObjBg* bg) {
+ }
+ 
+ void Interpreter::Gfxs2dexBg1cyc(F3DuObjBg* bg) {
++    // SoH-3DS: same null-background guard as Gfxs2dexBgCopy above.
++    if (bg == nullptr || bg->b.imagePtr == 0) {
++        return;
++    }
+     uintptr_t data = (uintptr_t)bg->b.imagePtr;
+ 
+     uint32_t texFlags = 0;
+@@ -3153,6 +3344,10 @@ void Interpreter::Gfxs2dexBg1cyc(F3DuObjBg* bg) {
+     if ((bool)gfx_check_image_signature((char*)data)) {
+         std::shared_ptr<Fast::Texture> tex = std::static_pointer_cast<Fast::Texture>(
+             Ship::Context::GetRawInstance()->GetResourceManager()->LoadResourceProcess((char*)data));
++        if (tex == nullptr) {
++            // SoH-3DS: same transient-load guard as Gfxs2dexBgCopy.
++            return;
++        }
+         texFlags = tex->Flags;
+         rawTexMetadata.width = tex->Width;
+         rawTexMetadata.height = tex->Height;
+@@ -3188,6 +3383,13 @@ void Interpreter::Gfxs2dexBg1cyc(F3DuObjBg* bg) {
+ }
+ 
+ void Interpreter::Gfxs2dexRecyCopy(F3DuObjSprite* spr) {
++    // SoH-3DS: spr is a raw DL word (no SegAddr - see the handler comment);
++    // a null or partially-written struct reaches here under the same
++    // producer as the bg handlers' 560-unmapped-read storm. scaleW/H of 0
++    // would divide to inf and UB-cast below.
++    if (spr == nullptr || spr->s.scaleW == 0 || spr->s.scaleH == 0) {
++        return;
++    }
+     s16 dsdx = 4 << 10;
+     [[maybe_unused]] s16 uls = spr->s.objX << 3;
+     // Flip flag only flips horizontally
+@@ -3300,19 +3502,42 @@ void gfx_copy_framebuffer(int fb_dst_id, int fb_src_id, bool copyOnce, bool* has
+ typedef bool (*GfxOpcodeHandlerFunc)(F3DGfx** gfx);
+ 
+ bool gfx_load_ucode_handler_f3dex2(F3DGfx** cmd) {
+-    Interpreter* gfx = mInstance.lock().get();
++    Interpreter* gfx = sInterpreterRaw;
+     gfx->mRsp->fog_mul = 0;
+     gfx->mRsp->fog_offset = 0;
+     return false;
+ }
+ 
+-bool gfx_cull_dl_handler_f3dex2(F3DGfx** cmd) {
+-    // TODO:
++bool gfx_cull_dl_handler_f3dex2(F3DGfx** cmd0) {
++    // SoH-3DS: this was a TODO no-op, so display lists the game asked to have
++    // culled (rooms, actors behind the camera) were fully processed anyway.
++    // gsSPCullDisplayList(v0, vn) stores both vertex indices pre-multiplied by
++    // two. If every vertex of the bounding volume is rejected by one shared
++    // clip plane, the rest of this display list cannot be visible: behave
++    // exactly like G_ENDDL. clip_rej is already computed per vertex by
++    // GfxSpVertex from the same planes the RSP used (near-plane intentionally
++    // excluded there, which only makes this test conservative).
++    Interpreter* gfx = sInterpreterRaw;
++    F3DGfx* cmd = *cmd0;
++    const uint32_t first = C0(0, 16) / 2;
++    const uint32_t last = (cmd->words.w1 & 0xFFFF) / 2;
++    if (first > last || last >= MAX_VERTICES) {
++        return false;
++    }
++    uint8_t sharedRejection = 0xFF;
++    for (uint32_t index = first; index <= last && sharedRejection != 0; ++index) {
++        sharedRejection &= gfx->mRsp->loaded_vertices[index].clip_rej;
++    }
++    if (sharedRejection != 0) {
++        gfx->mMarkerOn = false;
++        g_exec_stack.ret();
++        return true;
++    }
+     return false;
+ }
+ 
+ bool gfx_marker_handler_otr(F3DGfx** cmd0) {
+-    Interpreter* gfx = mInstance.lock().get();
++    Interpreter* gfx = sInterpreterRaw;
+     (*cmd0)++;
+     F3DGfx* cmd = (*cmd0);
+     gfx->mMarkerOn = true;
+@@ -3320,7 +3545,7 @@ bool gfx_marker_handler_otr(F3DGfx** cmd0) {
+ }
+ 
+ bool gfx_invalidate_tex_cache_handler_f3dex2(F3DGfx** cmd) {
+-    Interpreter* gfx = mInstance.lock().get();
++    Interpreter* gfx = sInterpreterRaw;
+     const uintptr_t texAddr = (*cmd)->words.w1;
+ 
+     if (texAddr == 0) {
+@@ -3349,7 +3574,7 @@ bool gfx_noop_handler_f3dex2(F3DGfx** cmd0) {
+ }
+ 
+ bool gfx_mtx_handler_f3dex2(F3DGfx** cmd0) {
+-    Interpreter* gfx = mInstance.lock().get();
++    Interpreter* gfx = sInterpreterRaw;
+     F3DGfx* cmd = *cmd0;
+     uintptr_t mtxAddr = cmd->words.w1;
+ 
+@@ -3358,7 +3583,7 @@ bool gfx_mtx_handler_f3dex2(F3DGfx** cmd0) {
+ }
+ // Seems to be the same for all other non F3DEX2 microcodes...
+ bool gfx_mtx_handler_f3d(F3DGfx** cmd0) {
+-    Interpreter* gfx = mInstance.lock().get();
++    Interpreter* gfx = sInterpreterRaw;
+     F3DGfx* cmd = *cmd0;
+     uintptr_t mtxAddr = cmd->words.w1;
+ 
+@@ -3367,7 +3592,7 @@ bool gfx_mtx_handler_f3d(F3DGfx** cmd0) {
+ }
+ 
+ bool gfx_mtx_otr_filepath_handler_custom_f3dex2(F3DGfx** cmd0) {
+-    Interpreter* gfx = mInstance.lock().get();
++    Interpreter* gfx = sInterpreterRaw;
+     F3DGfx* cmd = *cmd0;
+     const char* fileName = (const char*)cmd->words.w1;
+     const int32_t* mtx = (const int32_t*)Ship::Context::GetRawInstance()->GetResourceManager()->GetResourceRawPointer(
+@@ -3381,7 +3606,7 @@ bool gfx_mtx_otr_filepath_handler_custom_f3dex2(F3DGfx** cmd0) {
+ }
+ 
+ bool gfx_mtx_otr_filepath_handler_custom_f3d(F3DGfx** cmd0) {
+-    Interpreter* gfx = mInstance.lock().get();
++    Interpreter* gfx = sInterpreterRaw;
+     F3DGfx* cmd = *cmd0;
+     const char* fileName = (const char*)cmd->words.w1;
+     const int32_t* mtx = (const int32_t*)Ship::Context::GetRawInstance()->GetResourceManager()->GetResourceRawPointer(
+@@ -3411,7 +3636,7 @@ bool gfx_mtx_otr_handler_custom_f3dex2(F3DGfx** cmd0) {
+         (const int32_t*)Ship::Context::GetRawInstance()->GetResourceManager()->GetResourceRawPointer(hash);
+ 
+     if (mtx != NULL) {
+-        Interpreter* gfx = mInstance.lock().get();
++        Interpreter* gfx = sInterpreterRaw;
+         cmd--;
+         gfx->GfxSpMatrix(C0(0, 8) ^ F3DEX2_G_MTX_PUSH, mtx);
+         cmd++;
+@@ -3421,7 +3646,7 @@ bool gfx_mtx_otr_handler_custom_f3dex2(F3DGfx** cmd0) {
+ }
+ 
+ bool gfx_mtx_otr_handler_custom_f3d(F3DGfx** cmd0) {
+-    Interpreter* gfx = mInstance.lock().get();
++    Interpreter* gfx = sInterpreterRaw;
+     (*cmd0)++;
+     F3DGfx* cmd = *cmd0;
+ 
+@@ -3445,7 +3670,7 @@ bool gfx_mtx_otr_handler_custom(F3DGfx** cmd0) {
+ }
+ 
+ bool gfx_pop_mtx_handler_f3dex2(F3DGfx** cmd0) {
+-    Interpreter* gfx = mInstance.lock().get();
++    Interpreter* gfx = sInterpreterRaw;
+     F3DGfx* cmd = *cmd0;
+ 
+     gfx->GfxSpPopMatrix((uint32_t)(cmd->words.w1 / 64));
+@@ -3454,7 +3679,7 @@ bool gfx_pop_mtx_handler_f3dex2(F3DGfx** cmd0) {
+ }
+ 
+ bool gfx_pop_mtx_handler_f3d(F3DGfx** cmd0) {
+-    Interpreter* gfx = mInstance.lock().get();
++    Interpreter* gfx = sInterpreterRaw;
+     F3DGfx* cmd = *cmd0;
+ 
+     gfx->GfxSpPopMatrix(1);
+@@ -3463,7 +3688,7 @@ bool gfx_pop_mtx_handler_f3d(F3DGfx** cmd0) {
+ }
+ 
+ bool gfx_movemem_handler_f3dex2(F3DGfx** cmd0) {
+-    Interpreter* gfx = mInstance.lock().get();
++    Interpreter* gfx = sInterpreterRaw;
+     F3DGfx* cmd = *cmd0;
+ 
+     gfx->GfxSpMovememF3dex2(C0(0, 8), C0(8, 8) * 8, gfx->SegAddr(cmd->words.w1));
+@@ -3472,7 +3697,7 @@ bool gfx_movemem_handler_f3dex2(F3DGfx** cmd0) {
+ }
+ 
+ bool gfx_movemem_handler_f3d(F3DGfx** cmd0) {
+-    Interpreter* gfx = mInstance.lock().get();
++    Interpreter* gfx = sInterpreterRaw;
+     F3DGfx* cmd = *cmd0;
+ 
+     gfx->GfxSpMovememF3d(C0(16, 8), 0, gfx->SegAddr(cmd->words.w1));
+@@ -3481,7 +3706,7 @@ bool gfx_movemem_handler_f3d(F3DGfx** cmd0) {
+ }
+ 
+ bool gfx_movemem_handler_otr(F3DGfx** cmd0) {
+-    Interpreter* gfx = mInstance.lock().get();
++    Interpreter* gfx = sInterpreterRaw;
+     F3DGfx* cmd = *cmd0;
+ 
+     const uint8_t index = C1(24, 8);
+@@ -3505,7 +3730,7 @@ bool gfx_movemem_handler_otr(F3DGfx** cmd0) {
+ }
+ 
+ bool gfx_push_shader(F3DGfx** cmd0) {
+-    Interpreter* gfx = mInstance.lock().get();
++    Interpreter* gfx = sInterpreterRaw;
+     F3DGfx* cmd = *cmd0;
+     const char* path = (const char*)gfx->SegAddr(cmd->words.w1);
+ 
+@@ -3535,7 +3760,7 @@ bool gfx_push_shader(F3DGfx** cmd0) {
+ }
+ 
+ bool gfx_pop_shader(F3DGfx** cmd0) {
+-    Interpreter* gfx = mInstance.lock().get();
++    Interpreter* gfx = sInterpreterRaw;
+     F3DGfx* cmd = *cmd0;
+ 
+     gfx->mShaderStack.pop();
+@@ -3544,7 +3769,7 @@ bool gfx_pop_shader(F3DGfx** cmd0) {
+ }
+ 
+ const char* gfx_get_shader(int16_t id) {
+-    Interpreter* gfx = mInstance.lock().get();
++    Interpreter* gfx = sInterpreterRaw;
+ 
+     for (const std::pair<size_t, const char*>& shader : gfx->mShaders) {
+         if (shader.first == id) {
+@@ -3556,7 +3781,7 @@ const char* gfx_get_shader(int16_t id) {
+ }
+ 
+ bool gfx_moveword_handler_f3dex2(F3DGfx** cmd0) {
+-    Interpreter* gfx = mInstance.lock().get();
++    Interpreter* gfx = sInterpreterRaw;
+     F3DGfx* cmd = *cmd0;
+ 
+     gfx->GfxSpMovewordF3dex2(C0(16, 8), C0(0, 16), cmd->words.w1);
+@@ -3565,7 +3790,7 @@ bool gfx_moveword_handler_f3dex2(F3DGfx** cmd0) {
+ }
+ 
+ bool gfx_moveword_handler_f3d(F3DGfx** cmd0) {
+-    Interpreter* gfx = mInstance.lock().get();
++    Interpreter* gfx = sInterpreterRaw;
+     F3DGfx* cmd = *cmd0;
+ 
+     gfx->GfxSpMovewordF3d(C0(0, 8), C0(8, 16), cmd->words.w1);
+@@ -3574,7 +3799,7 @@ bool gfx_moveword_handler_f3d(F3DGfx** cmd0) {
+ }
+ 
+ bool gfx_texture_handler_f3dex2(F3DGfx** cmd0) {
+-    Interpreter* gfx = mInstance.lock().get();
++    Interpreter* gfx = sInterpreterRaw;
+     F3DGfx* cmd = *cmd0;
+ 
+     gfx->GfxSpTexture(C1(16, 16), C1(0, 16), C0(11, 3), C0(8, 3), C0(1, 7));
+@@ -3584,7 +3809,7 @@ bool gfx_texture_handler_f3dex2(F3DGfx** cmd0) {
+ 
+ // Seems to be the same for all other non F3DEX2 microcodes...
+ bool gfx_texture_handler_f3d(F3DGfx** cmd0) {
+-    Interpreter* gfx = mInstance.lock().get();
++    Interpreter* gfx = sInterpreterRaw;
+     F3DGfx* cmd = *cmd0;
+ 
+     gfx->GfxSpTexture(C1(16, 16), C1(0, 16), C0(11, 3), C0(8, 3), C0(0, 8));
+@@ -3594,7 +3819,7 @@ bool gfx_texture_handler_f3d(F3DGfx** cmd0) {
+ 
+ // Almost all versions of the microcode have their own version of this opcode
+ bool gfx_vtx_handler_f3dex2(F3DGfx** cmd0) {
+-    Interpreter* gfx = mInstance.lock().get();
++    Interpreter* gfx = sInterpreterRaw;
+     F3DGfx* cmd = *cmd0;
+ 
+     gfx->GfxSpVertex(C0(12, 8), C0(1, 7) - C0(12, 8), (const F3DVtx*)gfx->SegAddr(cmd->words.w1));
+@@ -3603,7 +3828,7 @@ bool gfx_vtx_handler_f3dex2(F3DGfx** cmd0) {
+ }
+ 
+ bool gfx_vtx_handler_f3dex(F3DGfx** cmd0) {
+-    Interpreter* gfx = mInstance.lock().get();
++    Interpreter* gfx = sInterpreterRaw;
+     F3DGfx* cmd = *cmd0;
+     gfx->GfxSpVertex(C0(10, 6), C0(17, 7), (const F3DVtx*)gfx->SegAddr(cmd->words.w1));
+ 
+@@ -3611,7 +3836,7 @@ bool gfx_vtx_handler_f3dex(F3DGfx** cmd0) {
+ }
+ 
+ bool gfx_vtx_handler_f3d(F3DGfx** cmd0) {
+-    Interpreter* gfx = mInstance.lock().get();
++    Interpreter* gfx = sInterpreterRaw;
+     F3DGfx* cmd = *cmd0;
+ 
+     gfx->GfxSpVertex((C0(0, 16)) / sizeof(F3DVtx), C0(16, 4), (const F3DVtx*)gfx->SegAddr(cmd->words.w1));
+@@ -3620,7 +3845,7 @@ bool gfx_vtx_handler_f3d(F3DGfx** cmd0) {
+ }
+ 
+ bool gfx_vtx_hash_handler_custom(F3DGfx** cmd0) {
+-    Interpreter* gfx = mInstance.lock().get();
++    Interpreter* gfx = sInterpreterRaw;
+     // Offset added to the start of the vertices
+     const uintptr_t offset = (*cmd0)->words.w1;
+     // This is a two-part display list command, so increment the instruction pointer so we can get the CRC64
+@@ -3655,7 +3880,7 @@ bool gfx_vtx_hash_handler_custom(F3DGfx** cmd0) {
+ }
+ 
+ bool gfx_vtx_otr_filepath_handler_custom(F3DGfx** cmd0) {
+-    Interpreter* gfx = mInstance.lock().get();
++    Interpreter* gfx = sInterpreterRaw;
+     F3DGfx* cmd = *cmd0;
+     char* fileName = (char*)cmd->words.w1;
+     (*cmd0)++;
+@@ -3696,7 +3921,7 @@ bool gfx_dl_otr_filepath_handler_custom(F3DGfx** cmd0) {
+ 
+ // The original F3D microcode doesn't seem to have this opcode. Glide handles it as part of moveword
+ bool gfx_modify_vtx_handler_f3dex2(F3DGfx** cmd0) {
+-    Interpreter* gfx = mInstance.lock().get();
++    Interpreter* gfx = sInterpreterRaw;
+     F3DGfx* cmd = *cmd0;
+     gfx->GfxSpModifyVertex(C0(1, 15), C0(16, 8), (uint32_t)cmd->words.w1);
+     return false;
+@@ -3704,7 +3929,7 @@ bool gfx_modify_vtx_handler_f3dex2(F3DGfx** cmd0) {
+ 
+ // F3D, F3DEX, and F3DEX2 do the same thing but F3DEX2 has its own opcode number
+ bool gfx_dl_handler_common(F3DGfx** cmd0) {
+-    Interpreter* gfx = mInstance.lock().get();
++    Interpreter* gfx = sInterpreterRaw;
+     F3DGfx* cmd = *cmd0;
+     F3DGfx* subGFX = (F3DGfx*)gfx->SegAddr(cmd->words.w1);
+     if (C0(16, 1) == 0) {
+@@ -3734,7 +3959,7 @@ bool gfx_dl_otr_hash_handler_custom(F3DGfx** cmd0) {
+             g_exec_stack.call(cmd, gfx);
+         }
+     } else {
+-        Interpreter* gfx = mInstance.lock().get();
++        Interpreter* gfx = sInterpreterRaw;
+         assert(0 && "????");
+         (*cmd0) = (F3DGfx*)gfx->SegAddr((*cmd0)->words.w1);
+         return true;
+@@ -3745,7 +3970,7 @@ bool gfx_dl_index_handler(F3DGfx** cmd0) {
+     // Compute seg addr by converting an index value to a offset value
+     // handling 32 vs 64 bit size differences for Gfx
+     // adding 1 to trigger the segaddr flow
+-    Interpreter* gfx = mInstance.lock().get();
++    Interpreter* gfx = sInterpreterRaw;
+     F3DGfx* cmd = (*cmd0);
+     uint8_t segNum = (uint8_t)(cmd->words.w1 >> 24);
+     uint32_t index = (uint32_t)(cmd->words.w1 & 0x00FFFFFF);
+@@ -3774,7 +3999,7 @@ bool gfx_pushcd_handler_custom(F3DGfx** cmd0) {
+ // TODO handle special OTR opcodes later...
+ bool gfx_branch_z_otr_handler_f3dex2(F3DGfx** cmd0) {
+     // Push return address
+-    Interpreter* gfx = mInstance.lock().get();
++    Interpreter* gfx = sInterpreterRaw;
+     F3DGfx* cmd = (*cmd0);
+ 
+     uint8_t vbidx = (uint8_t)((*cmd0)->words.w0 & 0x00000FFF);
+@@ -3799,14 +4024,14 @@ bool gfx_branch_z_otr_handler_f3dex2(F3DGfx** cmd0) {
+ 
+ // F3D, F3DEX, and F3DEX2 do the same thing but F3DEX2 has its own opcode number
+ bool gfx_end_dl_handler_common(F3DGfx** cmd0) {
+-    Interpreter* gfx = mInstance.lock().get();
++    Interpreter* gfx = sInterpreterRaw;
+     gfx->mMarkerOn = false;
+     g_exec_stack.ret();
+     return true;
+ }
+ 
+ bool gfx_set_prim_depth_handler_rdp(F3DGfx** cmd) {
+-    Interpreter* gfx = mInstance.lock().get();
++    Interpreter* gfx = sInterpreterRaw;
+     uint32_t w1 = (*cmd)->words.w1;
+     gfx->mRdp->prim_depth = (uint16_t)((w1 >> 16) & 0x7FFF); // Mask to 15 bits
+     return false;
+@@ -3814,7 +4039,7 @@ bool gfx_set_prim_depth_handler_rdp(F3DGfx** cmd) {
+ 
+ // Only on F3DEX2
+ bool gfx_geometry_mode_handler_f3dex2(F3DGfx** cmd0) {
+-    Interpreter* gfx = mInstance.lock().get();
++    Interpreter* gfx = sInterpreterRaw;
+     F3DGfx* cmd = *cmd0;
+ 
+     gfx->GfxSpGeometryMode(~C0(0, 24), (uint32_t)cmd->words.w1);
+@@ -3823,7 +4048,7 @@ bool gfx_geometry_mode_handler_f3dex2(F3DGfx** cmd0) {
+ 
+ // Only on F3DEX and older
+ bool gfx_set_geometry_mode_handler_f3d(F3DGfx** cmd0) {
+-    Interpreter* gfx = mInstance.lock().get();
++    Interpreter* gfx = sInterpreterRaw;
+     F3DGfx* cmd = *cmd0;
+ 
+     gfx->GfxSpGeometryMode(0, (uint32_t)cmd->words.w1);
+@@ -3832,7 +4057,7 @@ bool gfx_set_geometry_mode_handler_f3d(F3DGfx** cmd0) {
+ 
+ // Only on F3DEX and older
+ bool gfx_clear_geometry_mode_handler_f3d(F3DGfx** cmd0) {
+-    Interpreter* gfx = mInstance.lock().get();
++    Interpreter* gfx = sInterpreterRaw;
+     F3DGfx* cmd = *cmd0;
+ 
+     gfx->GfxSpGeometryMode((uint32_t)cmd->words.w1, 0);
+@@ -3840,7 +4065,7 @@ bool gfx_clear_geometry_mode_handler_f3d(F3DGfx** cmd0) {
+ }
+ 
+ bool gfx_tri1_otr_handler_f3dex2(F3DGfx** cmd0) {
+-    Interpreter* gfx = mInstance.lock().get();
++    Interpreter* gfx = sInterpreterRaw;
+ 
+     F3DGfx* cmd = *cmd0;
+     uint8_t v00 = (uint8_t)(cmd->words.w0 & 0x0000FFFF);
+@@ -3852,7 +4077,7 @@ bool gfx_tri1_otr_handler_f3dex2(F3DGfx** cmd0) {
+ }
+ 
+ bool gfx_tri1_handler_f3dex2(F3DGfx** cmd0) {
+-    Interpreter* gfx = mInstance.lock().get();
++    Interpreter* gfx = sInterpreterRaw;
+     F3DGfx* cmd = *cmd0;
+ 
+     gfx->GfxSpTri1(C0(16, 8) / 2, C0(8, 8) / 2, C0(0, 8) / 2, false);
+@@ -3861,7 +4086,7 @@ bool gfx_tri1_handler_f3dex2(F3DGfx** cmd0) {
+ }
+ 
+ bool gfx_tri1_handler_f3dex(F3DGfx** cmd0) {
+-    Interpreter* gfx = mInstance.lock().get();
++    Interpreter* gfx = sInterpreterRaw;
+     F3DGfx* cmd = *cmd0;
+ 
+     gfx->GfxSpTri1(C1(17, 7), C1(9, 7), C1(1, 7), false);
+@@ -3870,7 +4095,7 @@ bool gfx_tri1_handler_f3dex(F3DGfx** cmd0) {
+ }
+ 
+ bool gfx_tri1_handler_f3d(F3DGfx** cmd0) {
+-    Interpreter* gfx = mInstance.lock().get();
++    Interpreter* gfx = sInterpreterRaw;
+     F3DGfx* cmd = *cmd0;
+ 
+     gfx->GfxSpTri1(C1(16, 8) / 10, C1(8, 8) / 10, C1(0, 8) / 10, false);
+@@ -3880,7 +4105,7 @@ bool gfx_tri1_handler_f3d(F3DGfx** cmd0) {
+ 
+ // F3DEX, and F3DEX2 share a tri2 function, however F3DEX has a different quad function.
+ bool gfx_tri2_handler_f3dex(F3DGfx** cmd0) {
+-    Interpreter* gfx = mInstance.lock().get();
++    Interpreter* gfx = sInterpreterRaw;
+     F3DGfx* cmd = *cmd0;
+ 
+     gfx->GfxSpTri1(C0(17, 7), C0(9, 7), C0(1, 7), false);
+@@ -3889,7 +4114,7 @@ bool gfx_tri2_handler_f3dex(F3DGfx** cmd0) {
+ }
+ 
+ bool gfx_quad_handler_f3dex2(F3DGfx** cmd0) {
+-    Interpreter* gfx = mInstance.lock().get();
++    Interpreter* gfx = sInterpreterRaw;
+     F3DGfx* cmd = *cmd0;
+ 
+     gfx->GfxSpTri1(C0(16, 8) / 2, C0(8, 8) / 2, C0(0, 8) / 2, false);
+@@ -3898,7 +4123,7 @@ bool gfx_quad_handler_f3dex2(F3DGfx** cmd0) {
+ }
+ 
+ bool gfx_quad_handler_f3dex(F3DGfx** cmd0) {
+-    Interpreter* gfx = mInstance.lock().get();
++    Interpreter* gfx = sInterpreterRaw;
+     F3DGfx* cmd = *cmd0;
+ 
+     gfx->GfxSpTri1(C1(16, 8) / 2, C1(8, 8) / 2, C1(0, 8) / 2, false);
+@@ -3907,7 +4132,7 @@ bool gfx_quad_handler_f3dex(F3DGfx** cmd0) {
+ }
+ 
+ bool gfx_othermode_l_handler_f3dex2(F3DGfx** cmd0) {
+-    Interpreter* gfx = mInstance.lock().get();
++    Interpreter* gfx = sInterpreterRaw;
+     F3DGfx* cmd = *cmd0;
+ 
+     gfx->GfxSpSetOtherMode(31 - C0(8, 8) - C0(0, 8), C0(0, 8) + 1, cmd->words.w1);
+@@ -3916,7 +4141,7 @@ bool gfx_othermode_l_handler_f3dex2(F3DGfx** cmd0) {
+ }
+ 
+ bool gfx_othermode_l_handler_f3d(F3DGfx** cmd0) {
+-    Interpreter* gfx = mInstance.lock().get();
++    Interpreter* gfx = sInterpreterRaw;
+     F3DGfx* cmd = *cmd0;
+ 
+     gfx->GfxSpSetOtherMode(C0(8, 8), C0(0, 8), cmd->words.w1);
+@@ -3925,7 +4150,7 @@ bool gfx_othermode_l_handler_f3d(F3DGfx** cmd0) {
+ }
+ 
+ bool gfx_othermode_h_handler_f3dex2(F3DGfx** cmd0) {
+-    Interpreter* gfx = mInstance.lock().get();
++    Interpreter* gfx = sInterpreterRaw;
+     F3DGfx* cmd = *cmd0;
+ 
+     gfx->GfxSpSetOtherMode(63 - C0(8, 8) - C0(0, 8), C0(0, 8) + 1, (uint64_t)cmd->words.w1 << 32);
+@@ -3935,7 +4160,7 @@ bool gfx_othermode_h_handler_f3dex2(F3DGfx** cmd0) {
+ 
+ // Only on F3DEX and older
+ bool gfx_set_geometry_mode_handler_f3dex(F3DGfx** cmd0) {
+-    Interpreter* gfx = mInstance.lock().get();
++    Interpreter* gfx = sInterpreterRaw;
+     F3DGfx* cmd = *cmd0;
+ 
+     gfx->GfxSpGeometryMode(0, (uint32_t)cmd->words.w1);
+@@ -3944,7 +4169,7 @@ bool gfx_set_geometry_mode_handler_f3dex(F3DGfx** cmd0) {
+ 
+ // Only on F3DEX and older
+ bool gfx_clear_geometry_mode_handler_f3dex(F3DGfx** cmd0) {
+-    Interpreter* gfx = mInstance.lock().get();
++    Interpreter* gfx = sInterpreterRaw;
+     F3DGfx* cmd = *cmd0;
+ 
+     gfx->GfxSpGeometryMode((uint32_t)cmd->words.w1, 0);
+@@ -3952,7 +4177,7 @@ bool gfx_clear_geometry_mode_handler_f3dex(F3DGfx** cmd0) {
+ }
+ 
+ bool gfx_othermode_h_handler_f3d(F3DGfx** cmd0) {
+-    Interpreter* gfx = mInstance.lock().get();
++    Interpreter* gfx = sInterpreterRaw;
+     F3DGfx* cmd = *cmd0;
+ 
+     gfx->GfxSpSetOtherMode(C0(8, 8) + 32, C0(0, 8), (uint64_t)cmd->words.w1 << 32);
+@@ -3960,6 +4185,23 @@ bool gfx_othermode_h_handler_f3d(F3DGfx** cmd0) {
+     return false;
+ }
+ 
++#ifdef __3DS__
++// SoH-3DS: <3ds.h> redefines u32/s32 in conflict with libultra's typedefs,
++// so declare the one kernel call used below with a matching ABI instead.
++extern "C" {
++typedef struct {
++    uint32_t base_addr;
++    uint32_t size;
++    uint32_t perm;
++    uint32_t state;
++} Soh3dsMemInfo;
++typedef struct {
++    uint32_t flags;
++} Soh3dsPageInfo;
++int32_t svcQueryMemory(Soh3dsMemInfo* info, Soh3dsPageInfo* out, uint32_t addr);
++}
++#endif
++
+ // A resolved address still in the N64 segmented range (<= 0x0FFFFFFF) usually means SegAddr
+ // failed to resolve it (segment not set up). Keep it only if it belongs to a loaded module,
+ // where it's a real low pointer (e.g. a static TLUT) rather than an unresolved segment addr.
+@@ -3974,6 +4216,40 @@ static bool IsValidResolvedAddress(uintptr_t addr) {
+     HMODULE module = nullptr;
+     return GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                               reinterpret_cast<LPCSTR>(addr), &module) != 0;
++#elif defined(__3DS__)
++    // SoH-3DS: the entire 3DS userland address space sits below 0x10000000 -
++    // the app image (0x00100000+) and the heap (0x08000000+) both live inside
++    // the "N64 segmented" range, so a range test cannot tell a resolved
++    // pointer from an unresolved segment address. The old `return false` here
++    // dropped every SETTIMG whose resource data lives in the heap: all
++    // runtime-built display lists (En_Mag title logo, flame masks, font
++    // glyphs, skybox) silently kept the previous texture and drew garbage.
++    // Ask the kernel instead: a mapped, readable page is a real pointer.
++    // Memoized per page: the syscall costs a kernel round-trip and HUD/text
++    // frames issue dozens of raw-pointer SETTIMGs; a page that was once
++    // readable heap/app memory stays that way for the process lifetime.
++    static uint32_t sCachedPage[256];
++    static uint8_t sCachedValid[256];
++    const uint32_t page = static_cast<uint32_t>(addr) >> 12;
++    const uint32_t slot = page & 255u;
++    if (sCachedPage[slot] == page && sCachedValid[slot] != 0) {
++        return true;
++    }
++    Soh3dsMemInfo memInfo;
++    Soh3dsPageInfo pageInfo;
++    bool valid = false;
++    if (svcQueryMemory(&memInfo, &pageInfo, static_cast<uint32_t>(addr)) >= 0) {
++        // state 0 == MEMSTATE_FREE; perm bit 0 == MEMPERM_READ.
++        valid = memInfo.state != 0 && (memInfo.perm & 1u) != 0;
++    }
++    // Cache positives only. A readable page stays readable for the process
++    // lifetime, but an unmapped page can be mapped later (heap growth, linear
++    // allocs) - a cached negative would keep a texture invisible forever.
++    if (valid) {
++        sCachedPage[slot] = page;
++        sCachedValid[slot] = 1;
++    }
++    return valid;
+ #else
+     // For non-Windows platforms, check whether the address belongs to a loaded object.
+     Dl_info info;
+@@ -3982,7 +4258,7 @@ static bool IsValidResolvedAddress(uintptr_t addr) {
+ }
+ 
+ bool gfx_set_timg_handler_rdp(F3DGfx** cmd0) {
+-    Interpreter* gfx = mInstance.lock().get();
++    Interpreter* gfx = sInterpreterRaw;
+     F3DGfx* cmd = *cmd0;
+     uintptr_t i = (uintptr_t)gfx->SegAddr(cmd->words.w1);
+ 
+@@ -3995,6 +4271,11 @@ bool gfx_set_timg_handler_rdp(F3DGfx** cmd0) {
+     rawTexMetdata.v_pixel_scale = 1;
+ 
+     if ((i & 1) != 1) {
++        // Validate before gfx_check_image_signature dereferences: the raw
++        // segment-resolved pointer is exactly the untrusted input here.
++        if (!IsValidResolvedAddress(i)) {
++            return false;
++        }
+         if (gfx_check_image_signature(imgData) == 1) {
+             std::shared_ptr<Fast::Texture> tex =
+                 std::static_pointer_cast<Fast::Texture>(gfx->ResolveResourceCached(imgData));
+@@ -4039,9 +4320,10 @@ bool gfx_set_timg_otr_hash_handler_custom(F3DGfx** cmd0) {
+         return false;
+     }
+ 
++    // fileName already holds this hash's path; the second HashToCString call
++    // repeated the lookup only to pass the same string.
+     std::shared_ptr<Fast::Texture> texture = std::static_pointer_cast<Fast::Texture>(
+-        Ship::Context::GetRawInstance()->GetResourceManager()->LoadResourceProcess(
+-            Ship::Context::GetRawInstance()->GetResourceManager()->GetArchiveManager()->HashToCString(hash)));
++        Ship::Context::GetRawInstance()->GetResourceManager()->LoadResourceProcess(fileName));
+     if (texture != nullptr) {
+         texFlags = texture->Flags;
+         rawTexMetadata.width = texture->Width;
+@@ -4077,11 +4359,14 @@ bool gfx_set_timg_otr_hash_handler_custom(F3DGfx** cmd0) {
+         uint32_t width = C0(0, 12) + 1;
+ 
+         if (tex != NULL) {
+-            Interpreter* gfx = mInstance.lock().get();
++            Interpreter* gfx = sInterpreterRaw;
+             gfx->GfxDpSetTextureImage(fmt, size, width, fileName, texFlags, rawTexMetadata, tex);
+         }
+     } else {
+-        SPDLOG_ERROR("G_SETTIMG_OTR_HASH: Texture is null");
++        // The hash resolved to a path, so this is a resource present in the
++        // archive index that would not load - a different fault from an
++        // unknown hash, and not chaseable without the path.
++        SPDLOG_ERROR("G_SETTIMG_OTR_HASH: texture resource failed to load: \"{}\"", fileName);
+     }
+ 
+     (*cmd0)++;
+@@ -4098,7 +4383,7 @@ bool gfx_set_timg_otr_filepath_handler_custom(F3DGfx** cmd0) {
+     std::shared_ptr<Fast::Texture> texture = std::static_pointer_cast<Fast::Texture>(
+         Ship::Context::GetRawInstance()->GetResourceManager()->LoadResourceProcess(fileName));
+     if (texture != nullptr) {
+-        Interpreter* gfx = mInstance.lock().get();
++        Interpreter* gfx = sInterpreterRaw;
+         texFlags = texture->Flags;
+         rawTexMetadata.width = texture->Width;
+         rawTexMetadata.height = texture->Height;
+@@ -4121,7 +4406,7 @@ bool gfx_set_timg_otr_filepath_handler_custom(F3DGfx** cmd0) {
+ 
+ bool gfx_set_fb_handler_custom(F3DGfx** cmd0) {
+     F3DGfx* cmd = *cmd0;
+-    Interpreter* gfx = mInstance.lock().get();
++    Interpreter* gfx = sInterpreterRaw;
+     gfx->Flush();
+ 
+     if (cmd->words.w1) {
+@@ -4137,7 +4422,7 @@ bool gfx_set_fb_handler_custom(F3DGfx** cmd0) {
+ }
+ 
+ bool gfx_reset_fb_handler_custom(F3DGfx** cmd0) {
+-    Interpreter* gfx = mInstance.lock().get();
++    Interpreter* gfx = sInterpreterRaw;
+     gfx->Flush();
+     gfx->mFbActive = false;
+     gfx->mActiveFrameBuffer = gfx->mFrameBuffers.end();
+@@ -4152,7 +4437,7 @@ bool gfx_reset_fb_handler_custom(F3DGfx** cmd0) {
+ }
+ 
+ bool gfx_copy_fb_handler_custom(F3DGfx** cmd0) {
+-    Interpreter* gfx = mInstance.lock().get();
++    Interpreter* gfx = sInterpreterRaw;
+     F3DGfx* cmd = *cmd0;
+     bool* hasCopiedPtr = (bool*)cmd->words.w1;
+ 
+@@ -4162,7 +4447,7 @@ bool gfx_copy_fb_handler_custom(F3DGfx** cmd0) {
+ }
+ 
+ bool gfx_read_fb_handler_custom(F3DGfx** cmd0) {
+-    Interpreter* gfx = mInstance.lock().get();
++    Interpreter* gfx = sInterpreterRaw;
+     F3DGfx* cmd = *cmd0;
+ 
+     int32_t width, height;
+@@ -4194,7 +4479,7 @@ bool gfx_read_fb_handler_custom(F3DGfx** cmd0) {
+ }
+ 
+ bool gfx_register_blended_texture_handler_custom(F3DGfx** cmd0) {
+-    Interpreter* gfx = mInstance.lock().get();
++    Interpreter* gfx = sInterpreterRaw;
+     F3DGfx* cmd = *cmd0;
+ 
+     // Flush incase we are replacing a previous blended texture that hasn't been finialized to the GPU
+@@ -4225,7 +4510,7 @@ bool gfx_register_blended_texture_handler_custom(F3DGfx** cmd0) {
+ }
+ 
+ bool gfx_set_timg_fb_handler_custom(F3DGfx** cmd0) {
+-    Interpreter* gfx = mInstance.lock().get();
++    Interpreter* gfx = sInterpreterRaw;
+     F3DGfx* cmd = *cmd0;
+ 
+     gfx->Flush();
+@@ -4236,7 +4521,7 @@ bool gfx_set_timg_fb_handler_custom(F3DGfx** cmd0) {
+ }
+ 
+ bool gfx_set_grayscale_handler_custom(F3DGfx** cmd0) {
+-    Interpreter* gfx = mInstance.lock().get();
++    Interpreter* gfx = sInterpreterRaw;
+     F3DGfx* cmd = *cmd0;
+ 
+     gfx->mRdp->grayscale = cmd->words.w1;
+@@ -4244,7 +4529,7 @@ bool gfx_set_grayscale_handler_custom(F3DGfx** cmd0) {
+ }
+ 
+ bool gfx_load_block_handler_rdp(F3DGfx** cmd0) {
+-    Interpreter* gfx = mInstance.lock().get();
++    Interpreter* gfx = sInterpreterRaw;
+     F3DGfx* cmd = *cmd0;
+ 
+     gfx->GfxDpLoadBlock(C1(24, 3), C0(12, 12), C0(0, 12), C1(12, 12), C1(0, 12));
+@@ -4252,7 +4537,7 @@ bool gfx_load_block_handler_rdp(F3DGfx** cmd0) {
+ }
+ 
+ bool gfx_load_block_wide_handler_rdp(F3DGfx** cmd0) {
+-    Interpreter* gfx = mInstance.lock().get();
++    Interpreter* gfx = sInterpreterRaw;
+     F3DGfx* cmd = *cmd0;
+ 
+     uint32_t tile = cmd->words.w0 & 0x7;
+@@ -4270,7 +4555,7 @@ bool gfx_load_block_wide_handler_rdp(F3DGfx** cmd0) {
+ }
+ 
+ bool gfx_load_tile_handler_rdp(F3DGfx** cmd0) {
+-    Interpreter* gfx = mInstance.lock().get();
++    Interpreter* gfx = sInterpreterRaw;
+     F3DGfx* cmd = *cmd0;
+ 
+     gfx->GfxDpLoadTile(C1(24, 3), C0(12, 12), C0(0, 12), C1(12, 12), C1(0, 12));
+@@ -4278,7 +4563,7 @@ bool gfx_load_tile_handler_rdp(F3DGfx** cmd0) {
+ }
+ 
+ bool gfx_set_tile_handler_rdp(F3DGfx** cmd0) {
+-    Interpreter* gfx = mInstance.lock().get();
++    Interpreter* gfx = sInterpreterRaw;
+     F3DGfx* cmd = *cmd0;
+ 
+     gfx->GfxDpSetTile(C0(21, 3), C0(19, 2), C0(9, 9), C0(0, 9), C1(24, 3), C1(20, 4), C1(18, 2), C1(14, 4), C1(10, 4),
+@@ -4287,7 +4572,7 @@ bool gfx_set_tile_handler_rdp(F3DGfx** cmd0) {
+ }
+ 
+ bool gfx_set_tile_size_handler_rdp(F3DGfx** cmd0) {
+-    Interpreter* gfx = mInstance.lock().get();
++    Interpreter* gfx = sInterpreterRaw;
+     F3DGfx* cmd = *cmd0;
+ 
+     gfx->GfxDpSetTileSize(C1(24, 3), C0(12, 12), C0(0, 12), C1(12, 12), C1(0, 12));
+@@ -4296,7 +4581,7 @@ bool gfx_set_tile_size_handler_rdp(F3DGfx** cmd0) {
+ 
+ bool gfx_set_tile_size_interp_handler_rdp(F3DGfx** cmd0) {
+     F3DGfx* cmd = *cmd0;
+-    Interpreter* gfx = mInstance.lock().get();
++    Interpreter* gfx = sInterpreterRaw;
+ 
+     if (gfx->mInterpolationIndex == gfx->mInterpolationIndexTarget) {
+         int tile = C1(24, 3);
+@@ -4317,7 +4602,7 @@ bool gfx_set_tile_size_interp_handler_rdp(F3DGfx** cmd0) {
+ 
+ bool gfx_set_tile_size_lerp_handler_rdp(F3DGfx** cmd0) {
+     F3DGfx* cmd = *cmd0;
+-    Interpreter* gfx = mInstance.lock().get();
++    Interpreter* gfx = sInterpreterRaw;
+ 
+     int tile = C1(24, 3);
+     float coords[8];
+@@ -4340,14 +4625,14 @@ bool gfx_set_tile_size_lerp_handler_rdp(F3DGfx** cmd0) {
+ 
+ bool gfx_set_interpolation_index_target(F3DGfx** cmd0) {
+     F3DGfx* cmd = *cmd0;
+-    Interpreter* gfx = mInstance.lock().get();
++    Interpreter* gfx = sInterpreterRaw;
+ 
+     gfx->mInterpolationIndexTarget = cmd->words.w1;
+     return false;
+ }
+ 
+ bool gfx_load_tlut_handler_rdp(F3DGfx** cmd0) {
+-    Interpreter* gfx = mInstance.lock().get();
++    Interpreter* gfx = sInterpreterRaw;
+     F3DGfx* cmd = *cmd0;
+ 
+     gfx->GfxDpLoadTlut(C1(24, 3), C1(14, 10));
+@@ -4355,7 +4640,7 @@ bool gfx_load_tlut_handler_rdp(F3DGfx** cmd0) {
+ }
+ 
+ bool gfx_set_env_color_handler_rdp(F3DGfx** cmd0) {
+-    Interpreter* gfx = mInstance.lock().get();
++    Interpreter* gfx = sInterpreterRaw;
+     F3DGfx* cmd = *cmd0;
+ 
+     gfx->GfxDpSetEnvColor(C1(24, 8), C1(16, 8), C1(8, 8), C1(0, 8));
+@@ -4363,7 +4648,7 @@ bool gfx_set_env_color_handler_rdp(F3DGfx** cmd0) {
+ }
+ 
+ bool gfx_set_prim_color_handler_rdp(F3DGfx** cmd0) {
+-    Interpreter* gfx = mInstance.lock().get();
++    Interpreter* gfx = sInterpreterRaw;
+     F3DGfx* cmd = *cmd0;
+ 
+     gfx->GfxDpSetPrimColor(C0(8, 8), C0(0, 8), C1(24, 8), C1(16, 8), C1(8, 8), C1(0, 8));
+@@ -4371,7 +4656,7 @@ bool gfx_set_prim_color_handler_rdp(F3DGfx** cmd0) {
+ }
+ 
+ bool gfx_set_fog_color_handler_rdp(F3DGfx** cmd0) {
+-    Interpreter* gfx = mInstance.lock().get();
++    Interpreter* gfx = sInterpreterRaw;
+     F3DGfx* cmd = *cmd0;
+ 
+     gfx->GfxDpSetFogColor(C1(24, 8), C1(16, 8), C1(8, 8), C1(0, 8));
+@@ -4384,7 +4669,7 @@ bool gfx_set_fog_color_handler_rdp(F3DGfx** cmd0) {
+ // applied during texture sampling.
+ // G_SETKEYR: w1 = [wR:12 | cR:8 | sR:8]
+ bool gfx_set_key_r_handler_rdp(F3DGfx** cmd0) {
+-    Interpreter* gfx = mInstance.lock().get();
++    Interpreter* gfx = sInterpreterRaw;
+     F3DGfx* cmd = *cmd0;
+ 
+     gfx->mRdp->key_center.r = C1(8, 8);
+@@ -4394,7 +4679,7 @@ bool gfx_set_key_r_handler_rdp(F3DGfx** cmd0) {
+ 
+ // G_SETKEYGB: w0 = [op:8 | wG:12 | _:4 | wB:12], w1 = [cG:8 | sG:8 | cB:8 | sB:8]
+ bool gfx_set_key_gb_handler_rdp(F3DGfx** cmd0) {
+-    Interpreter* gfx = mInstance.lock().get();
++    Interpreter* gfx = sInterpreterRaw;
+     F3DGfx* cmd = *cmd0;
+ 
+     gfx->mRdp->key_center.g = C1(24, 8);
+@@ -4407,7 +4692,7 @@ bool gfx_set_key_gb_handler_rdp(F3DGfx** cmd0) {
+ // G_SETCONVERT: w0 = [op:8 | k0:9 | k1:9 | k2_hi:4], w1 = [k2_lo:5 | k3:9 | k4:9 | k5:9]
+ // K0..K5 are signed 9-bit values; sign-extend after decoding.
+ bool gfx_set_convert_handler_rdp(F3DGfx** cmd0) {
+-    Interpreter* gfx = mInstance.lock().get();
++    Interpreter* gfx = sInterpreterRaw;
+     F3DGfx* cmd = *cmd0;
+ 
+     gfx->mRdp->convert_k[0] = sign_extend_9(C0(13, 9));
+@@ -4421,7 +4706,7 @@ bool gfx_set_convert_handler_rdp(F3DGfx** cmd0) {
+ }
+ 
+ bool gfx_set_blend_color_handler_rdp(F3DGfx** cmd0) {
+-    Interpreter* gfx = mInstance.lock().get();
++    Interpreter* gfx = sInterpreterRaw;
+     F3DGfx* cmd = *cmd0;
+ 
+     gfx->GfxDpSetBlendColor(C1(24, 8), C1(16, 8), C1(8, 8), C1(0, 8));
+@@ -4429,7 +4714,7 @@ bool gfx_set_blend_color_handler_rdp(F3DGfx** cmd0) {
+ }
+ 
+ bool gfx_set_fill_color_handler_rdp(F3DGfx** cmd0) {
+-    Interpreter* gfx = mInstance.lock().get();
++    Interpreter* gfx = sInterpreterRaw;
+     F3DGfx* cmd = *cmd0;
+ 
+     gfx->GfxDpSetFillColor((uint32_t)cmd->words.w1);
+@@ -4437,7 +4722,7 @@ bool gfx_set_fill_color_handler_rdp(F3DGfx** cmd0) {
+ }
+ 
+ bool gfx_set_intensity_handler_custom(F3DGfx** cmd0) {
+-    Interpreter* gfx = mInstance.lock().get();
++    Interpreter* gfx = sInterpreterRaw;
+     F3DGfx* cmd = *cmd0;
+ 
+     gfx->GfxDpSetGrayscaleColor(C1(24, 8), C1(16, 8), C1(8, 8), C1(0, 8));
+@@ -4445,7 +4730,7 @@ bool gfx_set_intensity_handler_custom(F3DGfx** cmd0) {
+ }
+ 
+ bool gfx_set_combine_handler_rdp(F3DGfx** cmd0) {
+-    Interpreter* gfx = mInstance.lock().get();
++    Interpreter* gfx = sInterpreterRaw;
+     F3DGfx* cmd = *cmd0;
+ 
+     gfx->GfxDpSetCombineMode(
+@@ -4455,7 +4740,7 @@ bool gfx_set_combine_handler_rdp(F3DGfx** cmd0) {
+ }
+ 
+ bool gfx_tex_rect_and_flip_handler_rdp(F3DGfx** cmd0) {
+-    Interpreter* gfx = mInstance.lock().get();
++    Interpreter* gfx = sInterpreterRaw;
+     F3DGfx* cmd = *cmd0;
+     int8_t opcode = (int8_t)(cmd->words.w0 >> 24);
+     int32_t lrx, lry, tile, ulx, uly;
+@@ -4481,7 +4766,7 @@ bool gfx_tex_rect_and_flip_handler_rdp(F3DGfx** cmd0) {
+ }
+ 
+ bool gfx_tex_rect_wide_handler_custom(F3DGfx** cmd0) {
+-    Interpreter* gfx = mInstance.lock().get();
++    Interpreter* gfx = sInterpreterRaw;
+     F3DGfx* cmd = *cmd0;
+     int8_t opcode = (int8_t)(cmd->words.w0 >> 24);
+     int32_t lrx, lry, tile, ulx, uly;
+@@ -4505,7 +4790,7 @@ bool gfx_tex_rect_wide_handler_custom(F3DGfx** cmd0) {
+ }
+ 
+ bool gfx_image_rect_handler_custom(F3DGfx** cmd0) {
+-    Interpreter* gfx = mInstance.lock().get();
++    Interpreter* gfx = sInterpreterRaw;
+     F3DGfx* cmd = *cmd0;
+     int16_t tile, iw, ih;
+     int16_t x0, y0, s0, t0;
+@@ -4529,7 +4814,7 @@ bool gfx_image_rect_handler_custom(F3DGfx** cmd0) {
+ }
+ 
+ bool gfx_fill_rect_handler_rdp(F3DGfx** cmd0) {
+-    Interpreter* gfx = mInstance.lock().get();
++    Interpreter* gfx = sInterpreterRaw;
+     F3DGfx* cmd = *(cmd0);
+ 
+     gfx->GfxDpFillRectangle(C1(12, 12), C1(0, 12), C0(12, 12), C0(0, 12));
+@@ -4537,7 +4822,7 @@ bool gfx_fill_rect_handler_rdp(F3DGfx** cmd0) {
+ }
+ 
+ bool gfx_fill_wide_rect_handler_custom(F3DGfx** cmd0) {
+-    Interpreter* gfx = mInstance.lock().get();
++    Interpreter* gfx = sInterpreterRaw;
+     F3DGfx* cmd = *(cmd0);
+     int32_t lrx, lry, ulx, uly;
+ 
+@@ -4552,7 +4837,7 @@ bool gfx_fill_wide_rect_handler_custom(F3DGfx** cmd0) {
+ }
+ 
+ bool gfx_SetScissor_handler_rdp(F3DGfx** cmd0) {
+-    Interpreter* gfx = mInstance.lock().get();
++    Interpreter* gfx = sInterpreterRaw;
+     F3DGfx* cmd = *(cmd0);
+ 
+     gfx->GfxDpSetScissor(C1(24, 2), C0(12, 12), C0(0, 12), C1(12, 12), C1(0, 12));
+@@ -4560,7 +4845,7 @@ bool gfx_SetScissor_handler_rdp(F3DGfx** cmd0) {
+ }
+ 
+ bool gfx_set_z_img_handler_rdp(F3DGfx** cmd0) {
+-    Interpreter* gfx = mInstance.lock().get();
++    Interpreter* gfx = sInterpreterRaw;
+     F3DGfx* cmd = *(cmd0);
+ 
+     gfx->GfxDpSetZImage(gfx->SegAddr(cmd->words.w1));
+@@ -4568,7 +4853,7 @@ bool gfx_set_z_img_handler_rdp(F3DGfx** cmd0) {
+ }
+ 
+ bool gfx_set_c_img_handler_rdp(F3DGfx** cmd0) {
+-    Interpreter* gfx = mInstance.lock().get();
++    Interpreter* gfx = sInterpreterRaw;
+     F3DGfx* cmd = *(cmd0);
+ 
+     gfx->GfxDpSetColorImage(C0(21, 3), C0(19, 2), C0(0, 11), gfx->SegAddr(cmd->words.w1));
+@@ -4576,7 +4861,7 @@ bool gfx_set_c_img_handler_rdp(F3DGfx** cmd0) {
+ }
+ 
+ bool gfx_rdp_set_other_mode_rdp(F3DGfx** cmd0) {
+-    Interpreter* gfx = mInstance.lock().get();
++    Interpreter* gfx = sInterpreterRaw;
+     F3DGfx* cmd = *(cmd0);
+ 
+     gfx->GfxDpSetOtherMode(C0(0, 24), (uint32_t)cmd->words.w1);
+@@ -4584,7 +4869,7 @@ bool gfx_rdp_set_other_mode_rdp(F3DGfx** cmd0) {
+ }
+ 
+ bool gfx_bg_copy_handler_s2dex(F3DGfx** cmd0) {
+-    Interpreter* gfx = mInstance.lock().get();
++    Interpreter* gfx = sInterpreterRaw;
+     F3DGfx* cmd = *(cmd0);
+ 
+     if (!gfx->mMarkerOn) {
+@@ -4594,7 +4879,7 @@ bool gfx_bg_copy_handler_s2dex(F3DGfx** cmd0) {
+ }
+ 
+ bool gfx_bg_1cyc_handler_s2dex(F3DGfx** cmd0) {
+-    Interpreter* gfx = mInstance.lock().get();
++    Interpreter* gfx = sInterpreterRaw;
+     F3DGfx* cmd = *(cmd0);
+ 
+     gfx->Gfxs2dexBg1cyc((F3DuObjBg*)cmd->words.w1);
+@@ -4602,7 +4887,7 @@ bool gfx_bg_1cyc_handler_s2dex(F3DGfx** cmd0) {
+ }
+ 
+ bool gfx_obj_rectangle_handler_s2dex(F3DGfx** cmd0) {
+-    Interpreter* gfx = mInstance.lock().get();
++    Interpreter* gfx = sInterpreterRaw;
+     F3DGfx* cmd = *(cmd0);
+ 
+     if (!gfx->mMarkerOn) {
+@@ -4612,7 +4897,7 @@ bool gfx_obj_rectangle_handler_s2dex(F3DGfx** cmd0) {
+ }
+ 
+ bool gfx_extra_geometry_mode_handler_custom(F3DGfx** cmd0) {
+-    Interpreter* gfx = mInstance.lock().get();
++    Interpreter* gfx = sInterpreterRaw;
+     F3DGfx* cmd = *(cmd0);
+ 
+     gfx->GfxSpExtraGeometryMode(~C0(0, 24), (uint32_t)cmd->words.w1);
+@@ -4842,7 +5127,7 @@ const char* GfxGetOpcodeName(int8_t opcode) {
+ static void gfx_set_ucode_handler(UcodeHandlers ucode) {
+     // Loaded ucode must be in range of the supported ucode_handlers
+     assert(ucode < ucode_max);
+-    Interpreter* gfx = mInstance.lock().get();
++    Interpreter* gfx = sInterpreterRaw;
+     ucode_handler_index = ucode;
+ 
+     // Reset some RSP state values upon ucode load to deal with hardware quirks discovered by emulators
+@@ -4959,6 +5244,20 @@ void Interpreter::Init(class GfxWindowBackend* wapi, class GfxRenderingAPI* rapi
+     mWapi = wapi;
+     mRapi = rapi;
+     mWapi->Init(game_name, rapi->GetName(), start_in_fullscreen, width, height, posX, posY);
++    // SoH-3DS: the window backend may clamp the requested size (the 3DS top
++    // screen is 400x240 while the config default asks for 640x480). Re-query
++    // what the window actually is, and seed the game viewport with it: on a
++    // port without ImGui nothing ever runs CalculateGameViewport, so these
++    // initial values are permanent. Leaving mGameWindowViewport at 0x0 forces
++    // mRendersToFb, and the game renders into an offscreen framebuffer that
++    // only ImGui would ever composite - while every viewport is laid out for
++    // the unclamped 640x480, cropping and magnifying the whole picture.
++    // Desktop backends rewrite both fields every frame, so this is inert there.
++    {
++        int32_t queriedPosX = 0;
++        int32_t queriedPosY = 0;
++        mWapi->GetDimensions(&width, &height, &queriedPosX, &queriedPosY);
++    }
+     mRapi->Init();
+     mRapi->UpdateFramebufferParameters(0, width, height, 1, false, true, true, true);
+     mCurDimensions.internal_mul =
+@@ -4967,6 +5266,10 @@ void Interpreter::Init(class GfxWindowBackend* wapi, class GfxRenderingAPI* rapi
+ 
+     mCurDimensions.width = width;
+     mCurDimensions.height = height;
++    mGameWindowViewport.x = 0;
++    mGameWindowViewport.y = 0;
++    mGameWindowViewport.width = static_cast<int16_t>(width);
++    mGameWindowViewport.height = static_cast<int16_t>(height);
+ 
+     mGameFb = mRapi->CreateFramebuffer();
+     mGameFbMsaaResolved = mRapi->CreateFramebuffer();
+@@ -4982,6 +5285,12 @@ void Interpreter::Init(class GfxWindowBackend* wapi, class GfxRenderingAPI* rapi
+         // We cap texture max to 8k, because why would you need more?
+         int max_tex_size = std::min(8192, mRapi->GetMaxTextureSize());
+         mTexUploadBuffer = (uint8_t*)malloc(max_tex_size * max_tex_size * 4);
++        if (mTexUploadBuffer == nullptr) {
++            // SoH-3DS: a delayed null+offset write at first import is far
++            // worse than a clean, attributable abort at init.
++            fprintf(stderr, "gfx: FATAL tex upload buffer alloc failed (%d)\n", max_tex_size);
++            abort();
++        }
+     }
+ 
+     ucode_handler_index = UcodeHandlers::ucode_f3dex2;
+@@ -5351,16 +5660,38 @@ void Interpreter::RegisterBlendedTexture(const char* name, uint8_t* mask, uint8_
+         name += 7;
+     }
+ 
++    std::shared_ptr<Ship::IResource> replacementResource = nullptr;
+     if (gfx_check_image_signature(reinterpret_cast<char*>(replacement))) {
+-        Fast::Texture* tex = std::static_pointer_cast<Fast::Texture>(
+-                                 Ship::Context::GetRawInstance()->GetResourceManager()->LoadResourceProcess(
+-                                     reinterpret_cast<char*>(replacement)))
+-                                 .get();
+-
+-        replacement = tex->ImageData;
++        // SoH-3DS: keep the shared_ptr alive in the map entry - the raw
++        // ImageData pointer must not outlive its resource (scene/object
++        // eviction frees it), and the load can fail transiently at the heap
++        // ceiling (null check).
++        replacementResource = Ship::Context::GetRawInstance()->GetResourceManager()->LoadResourceProcess(
++            reinterpret_cast<char*>(replacement));
++        if (replacementResource == nullptr) {
++            return;
++        }
++        replacement = std::static_pointer_cast<Fast::Texture>(replacementResource)->ImageData;
+     }
+ 
+-    mMaskedTextures[name] = MaskedTextureEntry{ mask, replacement };
++    mMaskedTextures[name] = MaskedTextureEntry{ mask, replacement, replacementResource };
++    // SoH-3DS TEMP diagnostic (178 s soak regression bisect): report map
++    // growth and total pinned bytes whenever the entry count changes.
++    {
++        static size_t sLastCount = 0;
++        if (mMaskedTextures.size() != sLastCount) {
++            sLastCount = mMaskedTextures.size();
++            size_t pinnedBytes = 0;
++            for (const auto& [key, entry] : mMaskedTextures) {
++                if (entry.replacementResource != nullptr) {
++                    pinnedBytes +=
++                        std::static_pointer_cast<Fast::Texture>(entry.replacementResource)->ImageDataSize;
++                }
++            }
++            fprintf(stderr, "gfx: masked-tex registered '%s' count=%u pinned=%u KiB\n", name,
++                    (unsigned)sLastCount, (unsigned)(pinnedBytes / 1024));
++        }
++    }
+ }
+ 
+ void Interpreter::UnregisterBlendedTexture(const char* name) {
+@@ -5477,26 +5808,26 @@ void gfx_cc_get_features(uint64_t shader_id0, uint64_t shader_id1, struct CCFeat
+ 
+ extern "C" int gfx_create_framebuffer(uint32_t width, uint32_t height, uint32_t native_width, uint32_t native_height,
+                                       uint8_t resize, bool forceFixedAspect) {
+-    return Fast::mInstance.lock().get()->CreateFrameBuffer(width, height, native_width, native_height, resize,
++    return Fast::sInterpreterRaw->CreateFrameBuffer(width, height, native_width, native_height, resize,
+                                                            forceFixedAspect);
+ }
+ 
+ extern "C" void gfx_texture_cache_clear() {
+-    Fast::mInstance.lock().get()->TextureCacheClear();
++    Fast::sInterpreterRaw->TextureCacheClear();
+ }
+ 
+ extern "C" void gfx_shader_cache_clear() {
+-    auto instance = Fast::mInstance.lock().get();
++    auto instance = Fast::sInterpreterRaw;
+     instance->mColorCombinerPool.clear();
+-    instance->mPrevCombiner = Fast::mInstance.lock().get()->mColorCombinerPool.end();
++    instance->mPrevCombiner = Fast::sInterpreterRaw->mColorCombinerPool.end();
+     instance->mRenderingState.mShaderProgram = nullptr;
+     instance->mRapi->ClearShaderCache();
+ }
+ 
+ extern "C" void gfx_register_fb_texture(const void* cpuAddr, int fbId) {
+-    Fast::mInstance.lock().get()->RegisterFbTexture(cpuAddr, fbId);
++    Fast::sInterpreterRaw->RegisterFbTexture(cpuAddr, fbId);
+ }
+ 
+ extern "C" void gfx_unregister_fb_texture(const void* cpuAddr) {
+-    Fast::mInstance.lock().get()->UnregisterFbTexture(cpuAddr);
++    Fast::sInterpreterRaw->UnregisterFbTexture(cpuAddr);
+ }
+\ No newline at end of file
+diff --git a/src/libultraship/controller/controldeck/ControlDeck.cpp b/src/libultraship/controller/controldeck/ControlDeck.cpp
+index c7c96f6..d2d22ec 100644
+--- a/src/libultraship/controller/controldeck/ControlDeck.cpp
++++ b/src/libultraship/controller/controldeck/ControlDeck.cpp
+@@ -7,6 +7,15 @@
+ #include <imgui.h>
+ #include "ship/controller/controldevice/controller/mapping/mouse/WheelHandler.h"
+ 
++#ifdef __3DS__
++#include <cstdio>
++// MUST be file scope with C linkage. A block-scope `extern` inside
++// `namespace LUS` mangles to LUS::Soh3dsPadProbe, which is a different symbol:
++// weak, never defined, always null, so the probe silently never fires and its
++// definition is then garbage-collected. That mistake cost three builds.
++extern "C" void Soh3dsPadProbe(unsigned int button, int stickX, int stickY) __attribute__((weak));
++#endif
++
+ namespace LUS {
+ ControlDeck::ControlDeck(std::vector<CONTROLLERBUTTONS_T> additionalBitmasks,
+                          std::shared_ptr<Ship::ControllerDefaultMappings> controllerDefaultMappings,
+@@ -70,5 +79,52 @@ void ControlDeck::WriteToOSContPad(OSContPad* pad) {
+             controller->ReadToPad(&pad[i]);
+         }
+     }
++
++#ifdef __3DS__
++    // This is the exact boundary where input enters the game: whatever lands in
++    // pad[0] here is what the decomp reads. Report port adoption once, then only
++    // on change, so a run stays quiet unless something is actually pressed.
++    static bool sPortsReported = false;
++    if (!sPortsReported) {
++        sPortsReported = true;
++        for (size_t i = 0; i < mPorts.size(); i++) {
++            const auto controller = mPorts[i]->GetConnectedController();
++            if (controller == nullptr) {
++                fprintf(stderr, "soh-3ds input: port %u empty\n", (unsigned)i);
++                continue;
++            }
++            // A port can hold a controller with no bindings, which reads as
++            // permanently idle. Count the buttons that actually have an
++            // SDLGamepad mapping so "adopted" and "controllable" are separate.
++            size_t mapped = 0;
++            for (const auto& [bitmask, button] : controller->GetAllButtons()) {
++                if (button != nullptr && button->HasMappingsForPhysicalDeviceType(Ship::PhysicalDeviceType::SDLGamepad)) {
++                    ++mapped;
++                }
++            }
++            fprintf(stderr, "soh-3ds input: port %u connected, hasConfig=%d, %u buttons mapped to SDLGamepad\n",
++                    (unsigned)i, (int)controller->HasConfig(), (unsigned)mapped);
++        }
++    }
++    static uint16_t sLastButton = 0;
++    static int8_t sLastX = 0;
++    static int8_t sLastY = 0;
++    // stderr is invisible on hardware, so mirror to the bottom screen when the
++    // ISG probe is armed. Called UNCONDITIONALLY, outside the change guard
++    // below: sLastButton starts at 0, so an idle pad never trips that guard and
++    // the probe would emit nothing at all - indistinguishable from a broken
++    // probe. The sink dedupes on button mask itself and emits one baseline line
++    // on its first call, which is what makes "no output" mean "not working".
++    if (Soh3dsPadProbe != nullptr) {
++        Soh3dsPadProbe((unsigned)pad[0].button, (int)pad[0].stick_x, (int)pad[0].stick_y);
++    }
++    if (pad[0].button != sLastButton || pad[0].stick_x != sLastX || pad[0].stick_y != sLastY) {
++        sLastButton = pad[0].button;
++        sLastX = pad[0].stick_x;
++        sLastY = pad[0].stick_y;
++        fprintf(stderr, "soh-3ds input: pad0 buttons=0x%04X stick=(%d,%d)\n", (unsigned)pad[0].button, (int)sLastX,
++                (int)sLastY);
++    }
++#endif
+ }
+ } // namespace LUS
+diff --git a/src/libultraship/libultra/os.cpp b/src/libultraship/libultra/os.cpp
+index c19241a..7a85ccc 100644
+--- a/src/libultraship/libultra/os.cpp
++++ b/src/libultraship/libultra/os.cpp
+@@ -1,3 +1,5 @@
++// SoH-3DS: libultra spellings, matching the headers. devkitARM makes
++// int32_t `long int`, a different type from s32.
+ #include "libultraship/libultraship.h"
+ #include <SDL2/SDL.h>
+ #include <ratio>
+@@ -11,7 +13,7 @@ extern "C" {
+ uint8_t __osMaxControllers = MAXCONTROLLERS;
+ uint64_t __osCurrentTime = 0;
+ 
+-int32_t osContInit(OSMesgQueue* mq, uint8_t* controllerBits, OSContStatus* status) {
++s32 osContInit(OSMesgQueue* mq, uint8_t* controllerBits, OSContStatus* status) {
+     *controllerBits = 0;
+     status->status |= 1;
+ 
+@@ -22,7 +24,7 @@ int32_t osContInit(OSMesgQueue* mq, uint8_t* controllerBits, OSContStatus* statu
+     return 0;
+ }
+ 
+-int32_t osContStartReadData(OSMesgQueue* mesg) {
++s32 osContStartReadData(OSMesgQueue* mesg) {
+     return 0;
+ }
+ 
+@@ -46,7 +48,7 @@ uint64_t osGetTime() {
+ }
+ 
+ // Returns the CPU clock count matching the N64 46.875Mhz cycle rate
+-uint32_t osGetCount() {
++u32 osGetCount() {
+     return std::chrono::duration_cast<n64CycleRateDuration>(std::chrono::steady_clock::now().time_since_epoch())
+         .count();
+ }
+@@ -59,21 +61,21 @@ int osSetTimer(OSTimer* t, OSTime countdown, OSTime interval, OSMesgQueue* mq, O
+     return 0;
+ }
+ 
+-int32_t osEPiStartDma(OSPiHandle* pihandle, OSIoMesg* mb, int32_t direction) {
++s32 osEPiStartDma(OSPiHandle* pihandle, OSIoMesg* mb, s32 direction) {
+     return 0;
+ }
+ 
+-uint32_t osAiGetLength() {
++u32 osAiGetLength() {
+     // TODO: Implement
+     return 0;
+ }
+ 
+-int32_t osAiSetNextBuffer(void* buff, size_t len) {
++s32 osAiSetNextBuffer(void* buff, size_t len) {
+     // TODO: Implement
+     return 0;
+ }
+ 
+-int32_t __osMotorAccess(OSPfs* pfs, uint32_t vibrate) {
++s32 __osMotorAccess(OSPfs* pfs, u32 vibrate) {
+     auto io = Ship::Context::GetRawInstance()->GetControlDeck()->GetControllerByPort(pfs->channel)->GetRumble();
+     if (vibrate) {
+         io->StartRumble();
+@@ -84,7 +86,7 @@ int32_t __osMotorAccess(OSPfs* pfs, uint32_t vibrate) {
+     return 0;
+ }
+ 
+-int32_t osMotorInit(OSMesgQueue* ctrlrqueue, OSPfs* pfs, int32_t channel) {
++s32 osMotorInit(OSMesgQueue* ctrlrqueue, OSPfs* pfs, s32 channel) {
+     pfs->channel = channel;
+     return 0;
+ }
+diff --git a/src/libultraship/libultra/os_cache.cpp b/src/libultraship/libultra/os_cache.cpp
+index 71e9071..6454618 100644
+--- a/src/libultraship/libultra/os_cache.cpp
++++ b/src/libultraship/libultra/os_cache.cpp
+@@ -1,3 +1,5 @@
++// SoH-3DS: libultra spellings, matching the headers. devkitARM makes
++// int32_t `long int`, a different type from s32.
+ #include "libultraship/libultraship.h"
+ 
+ extern "C" {
+@@ -5,12 +7,12 @@ extern "C" {
+ void osWritebackDCacheAll() {
+ }
+ 
+-void osInvalICache(void* p, int32_t x) {
++void osInvalICache(void* p, s32 x) {
+ }
+ 
+-void osWritebackDCache(void* p, int32_t x) {
++void osWritebackDCache(void* p, s32 x) {
+ }
+ 
+-void osInvalDCache(void* p, int32_t l) {
++void osInvalDCache(void* p, s32 l) {
+ }
+ }
+\ No newline at end of file
+diff --git a/src/libultraship/libultra/os_eeprom.cpp b/src/libultraship/libultra/os_eeprom.cpp
+index 14541a6..b43079d 100644
+--- a/src/libultraship/libultra/os_eeprom.cpp
++++ b/src/libultraship/libultra/os_eeprom.cpp
+@@ -1,12 +1,14 @@
++// SoH-3DS: libultra spellings, matching the headers. devkitARM makes
++// int32_t `long int`, a different type from s32.
+ #include "libultraship/libultraship.h"
+ 
+ extern "C" {
+ 
+-int32_t osEepromProbe(OSMesgQueue* mq) {
++s32 osEepromProbe(OSMesgQueue* mq) {
+     return EEPROM_TYPE_4K;
+ }
+ 
+-int32_t osEepromLongRead(OSMesgQueue* mq, uint8_t address, uint8_t* buffer, int32_t length) {
++s32 osEepromLongRead(OSMesgQueue* mq, uint8_t address, uint8_t* buffer, s32 length) {
+     u8 content[512];
+     s32 ret = -1;
+ 
+@@ -24,11 +26,11 @@ int32_t osEepromLongRead(OSMesgQueue* mq, uint8_t address, uint8_t* buffer, int3
+     return ret;
+ }
+ 
+-int32_t osEepromRead(OSMesgQueue* mq, u8 address, u8* buffer) {
++s32 osEepromRead(OSMesgQueue* mq, u8 address, u8* buffer) {
+     return osEepromLongRead(mq, address, buffer, 8);
+ }
+ 
+-int32_t osEepromLongWrite(OSMesgQueue* mq, uint8_t address, uint8_t* buffer, int32_t length) {
++s32 osEepromLongWrite(OSMesgQueue* mq, uint8_t address, uint8_t* buffer, s32 length) {
+     u8 content[512] = { 0 };
+     if (address != 0 || length != 512) {
+         osEepromLongRead(mq, 0, content, 512);
+@@ -45,7 +47,7 @@ int32_t osEepromLongWrite(OSMesgQueue* mq, uint8_t address, uint8_t* buffer, int
+     return ret;
+ }
+ 
+-int32_t osEepromWrite(OSMesgQueue* mq, uint8_t address, uint8_t* buffer) {
++s32 osEepromWrite(OSMesgQueue* mq, uint8_t address, uint8_t* buffer) {
+     return osEepromLongWrite(mq, address, buffer, 8);
+ }
+ }
+diff --git a/src/libultraship/libultra/os_mesg.cpp b/src/libultraship/libultra/os_mesg.cpp
+index e348061..e4b2c7a 100644
+--- a/src/libultraship/libultra/os_mesg.cpp
++++ b/src/libultraship/libultra/os_mesg.cpp
+@@ -1,10 +1,24 @@
++// SoH-3DS: libultra spellings, matching the headers. devkitARM makes
++// int32_t `long int`, a different type from s32.
+ #include "libultraship/libultraship.h"
+ 
++#ifdef __3DS__
++// SoH-3DS: these queues now cross physical cores (game thread on core 0,
++// audio synthesis on core 2) with no atomics or barriers - torn
++// validCount/first updates corrupt the command stream feeding synthesis.
++// One short-held lock; traffic is a handful of messages per frame.
++#include <mutex>
++static std::mutex sMesgLock;
++#define MESG_GUARD() std::lock_guard<std::mutex> guard(sMesgLock)
++#else
++#define MESG_GUARD() ((void)0)
++#endif
++
+ extern "C" {
+ 
+ __OSEventState __osEventStateTab[OS_NUM_EVENTS] = { 0 };
+ 
+-void osCreateMesgQueue(OSMesgQueue* mq, OSMesg* msgBuf, int32_t count) {
++void osCreateMesgQueue(OSMesgQueue* mq, OSMesg* msgBuf, s32 count) {
+     mq->validCount = 0;
+     mq->first = 0;
+     mq->msgCount = count;
+@@ -12,8 +26,9 @@ void osCreateMesgQueue(OSMesgQueue* mq, OSMesg* msgBuf, int32_t count) {
+     return;
+ }
+ 
+-int32_t osSendMesg(OSMesgQueue* mq, OSMesg msg, int32_t flag) {
+-    int32_t index;
++s32 osSendMesg(OSMesgQueue* mq, OSMesg msg, s32 flag) {
++    MESG_GUARD();
++    s32 index;
+     if (mq->validCount >= mq->msgCount) {
+         return -1;
+     }
+@@ -24,7 +39,8 @@ int32_t osSendMesg(OSMesgQueue* mq, OSMesg msg, int32_t flag) {
+     return 0;
+ }
+ 
+-int32_t osJamMesg(OSMesgQueue* mq, OSMesg msg, int32_t flag) {
++s32 osJamMesg(OSMesgQueue* mq, OSMesg msg, s32 flag) {
++    MESG_GUARD();
+     if (mq->validCount == 0) {
+         return -1;
+     }
+@@ -36,7 +52,8 @@ int32_t osJamMesg(OSMesgQueue* mq, OSMesg msg, int32_t flag) {
+     return 0;
+ }
+ 
+-int32_t osRecvMesg(OSMesgQueue* mq, OSMesg* msg, int32_t flag) {
++s32 osRecvMesg(OSMesgQueue* mq, OSMesg* msg, s32 flag) {
++    MESG_GUARD();
+     if (mq->validCount == 0) {
+         return -1;
+     }
+diff --git a/src/libultraship/libultra/os_pi.cpp b/src/libultraship/libultra/os_pi.cpp
+index 0c2dec0..9c08a7c 100644
+--- a/src/libultraship/libultra/os_pi.cpp
++++ b/src/libultraship/libultra/os_pi.cpp
+@@ -1,20 +1,22 @@
++// SoH-3DS: libultra spellings, matching the headers. devkitARM makes
++// int32_t `long int`, a different type from s32.
+ #include "libultraship/libultraship.h"
+ #include "AudioDmaRegistry.h"
+ 
+ extern "C" {
+ 
+-void osCreatePiManager(OSPri pri, OSMesgQueue* cmdQ, OSMesg* cmdBuf, int32_t cmdMsgCnt) {
++void osCreatePiManager(OSPri pri, OSMesgQueue* cmdQ, OSMesg* cmdBuf, s32 cmdMsgCnt) {
+ }
+ 
+-int32_t osPiReadIo(uint32_t a, uint32_t* b) {
++s32 osPiReadIo(u32 a, u32* b) {
+     return 0;
+ }
+ 
+-int32_t osPiWriteIo(uint32_t devAddr, uint32_t data) {
++s32 osPiWriteIo(u32 devAddr, u32 data) {
+     return 0;
+ }
+ 
+-int32_t osPiStartDma(OSIoMesg* mb, int32_t priority, int32_t direction, uintptr_t devAddr, void* vAddr, size_t nbytes,
++s32 osPiStartDma(OSIoMesg* mb, s32 priority, s32 direction, uintptr_t devAddr, void* vAddr, size_t nbytes,
+                      OSMesgQueue* mq) {
+     // On N64, DMA reads from ROM which has no bounds — the last chunk of
+     // an audio sample can extend past the data. On PC, clamp to the blob size
+diff --git a/src/libultraship/libultra/os_vi.cpp b/src/libultraship/libultra/os_vi.cpp
+index 882ae0d..61f81d7 100644
+--- a/src/libultraship/libultra/os_vi.cpp
++++ b/src/libultraship/libultra/os_vi.cpp
+@@ -1,3 +1,5 @@
++// SoH-3DS: libultra spellings, matching the headers. devkitARM makes
++// int32_t `long int`, a different type from s32.
+ #include "libultraship/libultraship.h"
+ 
+ extern "C" {
+@@ -16,7 +18,7 @@ void osCreateViManager(OSPri pri) {
+     SDL_AddTimer(16, &__lusViCallback, NULL);
+ }
+ 
+-void osViSetEvent(OSMesgQueue* queue, OSMesg mesg, uint32_t c) {
++void osViSetEvent(OSMesgQueue* queue, OSMesg mesg, u32 c) {
+ 
+     __OSEventState* es = &__osEventStateTab[OS_EVENT_VI];
+ 
+@@ -27,7 +29,7 @@ void osViSetEvent(OSMesgQueue* queue, OSMesg mesg, uint32_t c) {
+ void osViSwapBuffer(void* a) {
+ }
+ 
+-void osViSetSpecialFeatures(uint32_t a) {
++void osViSetSpecialFeatures(u32 a) {
+ }
+ 
+ void osViSetMode(OSViMode* a) {
+diff --git a/src/libultraship/libultra/os_vm.cpp b/src/libultraship/libultra/os_vm.cpp
+index b059918..dc850b8 100644
+--- a/src/libultraship/libultra/os_vm.cpp
++++ b/src/libultraship/libultra/os_vm.cpp
+@@ -1,3 +1,5 @@
++// SoH-3DS: libultra spellings, matching the headers. devkitARM makes
++// int32_t `long int`, a different type from s32.
+ #include "libultraship/libultraship.h"
+ 
+ extern "C" {
+@@ -6,6 +8,6 @@ uintptr_t osVirtualToPhysical(void* addr) {
+     return (uintptr_t)addr;
+ }
+ 
+-void osMapTLB(int32_t a, uint32_t b, void* c, uint32_t d, uint32_t e, uint32_t f) {
++void osMapTLB(s32 a, u32 b, void* c, u32 d, u32 e, u32 f) {
+ }
+ }
+\ No newline at end of file
+diff --git a/src/libultraship/window/gui/InputEditorWindow.cpp b/src/libultraship/window/gui/InputEditorWindow.cpp
+index 54948e1..52e6115 100644
+--- a/src/libultraship/window/gui/InputEditorWindow.cpp
++++ b/src/libultraship/window/gui/InputEditorWindow.cpp
+@@ -322,7 +322,7 @@ void InputEditorWindow::DrawButtonLineEditMappingButton(uint8_t port, CONTROLLER
+             if (sdlAxisDirectionToButtonMapping->AxisIsStick()) {
+                 ImGui::Text("Stick axis threshold:");
+ 
+-                int32_t stickAxisThreshold = globalSettings->GetStickAxisThresholdPercentage();
++                int stickAxisThreshold = globalSettings->GetStickAxisThresholdPercentage();
+                 if (stickAxisThreshold == 0) {
+                     ImGui::BeginDisabled();
+                 }
+@@ -360,7 +360,7 @@ void InputEditorWindow::DrawButtonLineEditMappingButton(uint8_t port, CONTROLLER
+             if (sdlAxisDirectionToButtonMapping->AxisIsTrigger()) {
+                 ImGui::Text("Trigger axis threshold:");
+ 
+-                int32_t triggerAxisThreshold = globalSettings->GetTriggerAxisThresholdPercentage();
++                int triggerAxisThreshold = globalSettings->GetTriggerAxisThresholdPercentage();
+                 if (triggerAxisThreshold == 0) {
+                     ImGui::BeginDisabled();
+                 }
+@@ -634,7 +634,7 @@ void InputEditorWindow::DrawStickSection(uint8_t port, uint8_t stick, int32_t id
+     if (ImGui::TreeNode(StringHelper::Sprintf("Analog Stick Options##%d", id).c_str())) {
+         ImGui::Text("Sensitivity:");
+ 
+-        int32_t sensitivityPercentage = controllerStick->GetSensitivityPercentage();
++        int sensitivityPercentage = controllerStick->GetSensitivityPercentage();
+         if (sensitivityPercentage == 0) {
+             ImGui::BeginDisabled();
+         }
+@@ -673,7 +673,7 @@ void InputEditorWindow::DrawStickSection(uint8_t port, uint8_t stick, int32_t id
+ 
+         ImGui::Text("Deadzone:");
+ 
+-        int32_t deadzonePercentage = controllerStick->GetDeadzonePercentage();
++        int deadzonePercentage = controllerStick->GetDeadzonePercentage();
+         if (deadzonePercentage == 0) {
+             ImGui::BeginDisabled();
+         }
+@@ -711,7 +711,7 @@ void InputEditorWindow::DrawStickSection(uint8_t port, uint8_t stick, int32_t id
+         }
+ 
+         ImGui::Text("Notch Snap Angle:");
+-        int32_t notchSnapAngle = controllerStick->GetNotchSnapAngle();
++        int notchSnapAngle = controllerStick->GetNotchSnapAngle();
+         if (notchSnapAngle == 0) {
+             ImGui::BeginDisabled();
+         }
+@@ -882,7 +882,7 @@ void InputEditorWindow::DrawRumbleSection(uint8_t port) {
+         if (open) {
+             ImGui::Text("Small Motor Intensity:");
+ 
+-            int32_t smallMotorIntensity = mapping->GetHighFrequencyIntensityPercentage();
++            int smallMotorIntensity = mapping->GetHighFrequencyIntensityPercentage();
+             if (smallMotorIntensity == 0) {
+                 ImGui::BeginDisabled();
+             }
+@@ -925,7 +925,7 @@ void InputEditorWindow::DrawRumbleSection(uint8_t port) {
+ 
+             ImGui::Text("Large Motor Intensity:");
+ 
+-            int32_t largeMotorIntensity = mapping->GetLowFrequencyIntensityPercentage();
++            int largeMotorIntensity = mapping->GetLowFrequencyIntensityPercentage();
+             if (largeMotorIntensity == 0) {
+                 ImGui::BeginDisabled();
+             }
+@@ -1030,7 +1030,7 @@ void InputEditorWindow::DrawLEDSection(uint8_t port) {
+             ImGui::Text("LED Color:");
+             ImGui::SameLine();
+             ImGui::SetNextItemWidth(SCALE_IMGUI_SIZE(80.0f));
+-            int32_t colorSource = mapping->GetColorSource();
++            int colorSource = mapping->GetColorSource();
+             if (ImGui::Combo(StringHelper::Sprintf("###ledColorSource%s", mapping->GetLEDMappingId().c_str()).c_str(),
+                              &colorSource, "Off\0Set\0Game\0\0")) {
+                 mapping->SetColorSource(colorSource);
+@@ -1126,7 +1126,7 @@ void InputEditorWindow::DrawGyroSection(uint8_t port) {
+         ImGui::BeginGroup();
+         ImGui::Text("Sensitivity:");
+ 
+-        int32_t sensitivity = mapping->GetSensitivityPercent();
++        int sensitivity = mapping->GetSensitivityPercent();
+         if (sensitivity == 0) {
+             ImGui::BeginDisabled();
+         }
+diff --git a/src/ship/Context.cpp b/src/ship/Context.cpp
+index 361a1f7..a273df7 100644
+--- a/src/ship/Context.cpp
++++ b/src/ship/Context.cpp
+@@ -4,6 +4,7 @@
+ #include <iostream>
+ #include <SDL2/SDL.h>
+ #include <spdlog/sinks/rotating_file_sink.h>
++#include <spdlog/sinks/stdout_sinks.h> // SoH-3DS: stderr_sink_mt
+ #include <spdlog/sinks/stdout_color_sinks.h>
+ #include "ship/install_config.h"
+ #include "ship/config/ConsoleVariable.h"
+@@ -165,14 +166,36 @@ bool Context::InitLogging(spdlog::level::level_enum debugBuildLogLevel,
+         sinks.push_back(systemConsoleSink);
+ #endif
+ 
++#ifdef __3DS__
++        // SoH-3DS: no file sink and no async logger.
++        //
++        // The rotating file sink wants logs/<name>.log under the app directory.
++        // On 3DS that path is on the SD card, the directory does not exist, and
++        // creating it through spdlog's helper does not work - startup hangs here
++        // with no output at all, which is exactly what it did.
++        //
++        // The async logger is also dropped: it spawns a worker thread with a
++        // blocking overflow policy purely to keep file I/O off the game thread,
++        // and with no file sink there is nothing to keep off it. A synchronous
++        // logger to stderr - routed to svcOutputDebugString - is both simpler
++        // and the only channel visible under an emulator.
++        auto ctrSink = std::make_shared<spdlog::sinks::stderr_sink_mt>();
++        ctrSink->set_level(spdlog::level::trace);
++        sinks.clear();
++        sinks.push_back(ctrSink);
++        mLogger = std::make_shared<spdlog::logger>(GetName(), sinks.begin(), sinks.end());
++        GetLogger()->set_level(releaseBuildLogLevel);
++        GetLogger()->flush_on(spdlog::level::trace);
++#else
+         auto logPath = GetPathRelativeToAppDirectory(("logs/" + GetName() + ".log"));
+         auto fileSink = std::make_shared<spdlog::sinks::rotating_file_sink_mt>(logPath, 1024 * 1024 * 10, 10);
+         sinks.push_back(fileSink);
+-#ifdef _DEBUG
++#endif
++#if defined(_DEBUG) && !defined(__3DS__)
+         mLogger = std::make_shared<spdlog::logger>("multi_sink", sinks.begin(), sinks.end());
+         GetLogger()->set_level(debugBuildLogLevel);
+         GetLogger()->flush_on(spdlog::level::trace);
+-#else
++#elif !defined(__3DS__)
+         mLogThreadPool = std::make_shared<spdlog::details::thread_pool>(8192, 1);
+         mLogger = std::make_shared<spdlog::async_logger>(GetName(), sinks.begin(), sinks.end(), mLogThreadPool,
+                                                          spdlog::async_overflow_policy::block);
+diff --git a/src/ship/audio/Audio.cpp b/src/ship/audio/Audio.cpp
+index 8cc5b12..ec9aac3 100644
+--- a/src/ship/audio/Audio.cpp
++++ b/src/ship/audio/Audio.cpp
+@@ -3,6 +3,10 @@
+ #ifdef __APPLE__
+ #include "ship/audio/CoreAudioAudioPlayer.h"
+ #endif
++#ifdef __3DS__
++#include "ship/audio/NdspAudioPlayer.h"
++#endif
++
+ 
+ #include "ship/Context.h"
+ #include "ship/config/Config.h"
+@@ -27,7 +31,15 @@ void Audio::InitAudioPlayer() {
+             break;
+ #endif
+         case AudioBackend::SDL:
++#ifdef __3DS__
++            // SoH-3DS: "sdl" selects the direct NDSP player. SDL's 3DS audio
++            // driver is NDSP underneath anyway, but adds a mixer thread, an
++            // extra copy, and queue accounting blind to NDSP's playback
++            // position. Keeping the backend name avoids config/menu churn.
++            mAudioPlayer = std::make_shared<NdspAudioPlayer>(this->mAudioSettings);
++#else
+             mAudioPlayer = std::make_shared<SDLAudioPlayer>(this->mAudioSettings);
++#endif
+             break;
+         default:
+             mAudioPlayer = std::make_shared<NullAudioPlayer>(this->mAudioSettings);
+diff --git a/src/ship/audio/CoreAudioAudioPlayer.cpp b/src/ship/audio/CoreAudioAudioPlayer.cpp
+index 489273b..67524f1 100644
+--- a/src/ship/audio/CoreAudioAudioPlayer.cpp
++++ b/src/ship/audio/CoreAudioAudioPlayer.cpp
+@@ -113,7 +113,7 @@ bool CoreAudioAudioPlayer::DoInit() {
+     return true;
+ }
+ 
+-int CoreAudioAudioPlayer::Buffered() {
++int32_t CoreAudioAudioPlayer::Buffered() {
+     pthread_mutex_lock(&mMutex);
+     size_t buffered;
+ 
+diff --git a/src/ship/audio/NdspAudioPlayer.cpp b/src/ship/audio/NdspAudioPlayer.cpp
+new file mode 100644
+index 0000000..92fd1f2
+--- /dev/null
++++ b/src/ship/audio/NdspAudioPlayer.cpp
+@@ -0,0 +1,241 @@
++// SoH-3DS: direct NDSP output, modeled on mario-kart-64-3ds
++// (platform/3ds/source/audio_ndsp_3ds.cpp in the port tree). See the header
++// for why this replaces SDL's 3DS audio driver.
++#ifdef __3DS__
++
++#include "ship/audio/NdspAudioPlayer.h"
++
++#include <3ds.h>
++
++#include <algorithm>
++#include <array>
++#include <cstring>
++
++#include <spdlog/spdlog.h>
++
++namespace {
++
++constexpr int kChannel = 0;
++// Eight waves: SoH's producer emits up to 1680-frame batches while up to
++// ~4096 frames sit queued, and the pool must also hold the wave NDSP is
++// draining. Six covered MK64's smaller batches; eight gives SoH's the same
++// safety margin.
++constexpr size_t kBufferCount = 8;
++constexpr size_t kFramesPerBuffer = 2048;
++constexpr size_t kChannels = 2;
++
++struct AudioBuffer {
++    ndspWaveBuf wave = {};
++    int16_t* samples = nullptr;
++};
++
++std::array<AudioBuffer, kBufferCount> sBuffers;
++LightLock sBufferLock;
++bool sInitialized = false;
++uint32_t sDroppedBatches = 0;
++
++class BufferLockGuard {
++  public:
++    BufferLockGuard() {
++        LightLock_Lock(&sBufferLock);
++    }
++    ~BufferLockGuard() {
++        LightLock_Unlock(&sBufferLock);
++    }
++    BufferLockGuard(const BufferLockGuard&) = delete;
++    BufferLockGuard& operator=(const BufferLockGuard&) = delete;
++};
++
++bool IsReusable(const ndspWaveBuf& wave) {
++    return wave.status == NDSP_WBUF_FREE || wave.status == NDSP_WBUF_DONE;
++}
++
++} // namespace
++
++namespace Ship {
++
++NdspAudioPlayer::~NdspAudioPlayer() {
++    SPDLOG_TRACE("destruct NDSP audio player");
++    DoClose();
++}
++
++bool NdspAudioPlayer::DoInit() {
++    if (sInitialized) {
++        return true;
++    }
++    if (R_FAILED(ndspInit())) {
++        // The DSP component is a per-console firmware blob; without it NDSP
++        // cannot start and the Null player takes over. Name the fix.
++        SPDLOG_ERROR("ndspInit failed - is sdmc:/3ds/dspfirm.cdc present? (dump it with the DSP1 homebrew)");
++        return false;
++    }
++    LightLock_Init(&sBufferLock);
++    sInitialized = true;
++
++    for (auto& buffer : sBuffers) {
++        buffer.samples = static_cast<int16_t*>(linearAlloc(kFramesPerBuffer * kChannels * sizeof(int16_t)));
++        if (buffer.samples == nullptr) {
++            SPDLOG_ERROR("NDSP wave pool allocation failed");
++            DoClose();
++            return false;
++        }
++        std::memset(buffer.samples, 0, kFramesPerBuffer * kChannels * sizeof(int16_t));
++        std::memset(&buffer.wave, 0, sizeof(buffer.wave));
++    }
++
++    ndspSetOutputMode(NDSP_OUTPUT_STEREO);
++    ndspChnReset(kChannel);
++    ndspChnWaveBufClear(kChannel);
++    ndspChnSetInterp(kChannel, NDSP_INTERP_LINEAR);
++    ndspChnSetRate(kChannel, static_cast<float>(GetSampleRate()));
++    ndspChnSetFormat(kChannel, NDSP_FORMAT_STEREO_PCM16);
++    float mix[12] = {};
++    mix[0] = 1.0f;
++    mix[1] = 1.0f;
++    ndspChnSetMix(kChannel, mix);
++    ndspChnSetPaused(kChannel, false);
++    SPDLOG_INFO("NDSP audio initialized: {} Hz stereo, {} x {}-frame waves", GetSampleRate(), kBufferCount,
++                kFramesPerBuffer);
++    return true;
++}
++
++void NdspAudioPlayer::DoClose() {
++    // The whole teardown holds sBufferLock: DoPlay (core-2 synthesis thread)
++    // checks sInitialized unlocked, then calls NDSP APIs and memcpys into the
++    // wave pool under this lock - so pause/clear/ndspExit, the sInitialized
++    // flip, and the frees must all be serialized behind it, or an
++    // abnormal-teardown DoClose can exit NDSP / free samples mid-batch.
++    BufferLockGuard lock;
++    if (sInitialized) {
++        ndspChnSetPaused(kChannel, true);
++        ndspChnWaveBufClear(kChannel);
++        // Stop libctru's NDSP worker and unregister its APT/DSP hooks before
++        // releasing any wave memory.
++        ndspExit();
++        sInitialized = false;
++    }
++    for (auto& buffer : sBuffers) {
++        if (buffer.samples != nullptr) {
++            linearFree(buffer.samples);
++            buffer.samples = nullptr;
++        }
++        std::memset(&buffer.wave, 0, sizeof(buffer.wave));
++    }
++}
++
++// SoH-3DS: called from the FATAL/terminate path (tests/soh_3ds_main.cpp)
++// before process teardown unmaps the heap. ndspExit joins libctru's NDSP
++// worker thread, so it can no longer run on an unmapped stack (F1 class).
++// Deliberately no frees: the process is dying, and leaving memory alone
++// closes every teardown UAF window. Defined inside namespace Ship, so the
++// statics resolve unqualified; extern "C" gives it unmangled linkage.
++extern "C" void Soh3dsAudioQuiesce(void) {
++    BufferLockGuard lock;
++    if (sInitialized) {
++        ndspChnSetPaused(kChannel, true);
++        ndspChnWaveBufClear(kChannel);
++        ndspExit();
++        sInitialized = false;
++    }
++}
++
++int32_t NdspAudioPlayer::Buffered() {
++    if (!sInitialized) {
++        return 0;
++    }
++
++    BufferLockGuard lock;
++
++    // A PLAYING wave has already been consumed up to the channel's current
++    // sample position. Counting its full size would make the producer believe
++    // it had almost one extra batch buffered and delay refills precisely when
++    // a heavy frame needs the margin most. (Same accounting as MK64-3DS.)
++    const u16 playingSequence = ndspChnGetWaveBufSeq(kChannel);
++    const u32 playingPosition = ndspChnGetSamplePos(kChannel);
++    uint32_t frames = 0;
++    for (const auto& buffer : sBuffers) {
++        if (buffer.wave.status == NDSP_WBUF_QUEUED) {
++            frames += buffer.wave.nsamples;
++        } else if (buffer.wave.status == NDSP_WBUF_PLAYING) {
++            if (buffer.wave.sequence_id == playingSequence && playingPosition < buffer.wave.nsamples) {
++                frames += buffer.wave.nsamples - playingPosition;
++            } else {
++                // Status and sequence are updated asynchronously by NDSP. If
++                // they crossed between the two snapshots, conservatively
++                // retain the wave instead of reporting a false underrun.
++                frames += buffer.wave.nsamples;
++            }
++        }
++    }
++    return static_cast<int32_t>(frames);
++}
++
++void NdspAudioPlayer::DoPlay(const uint8_t* buf, size_t len) {
++    if (!sInitialized || buf == nullptr || len == 0) {
++        return;
++    }
++
++    // SoH-3DS: temporary diagnostics - a refill arriving after the channel
++    // fully drained means an audible gap. Gap-riddled output sounds both
++    // choppy and quiet (silence drags the perceived level down), which is
++    // indistinguishable by ear from latency.
++    {
++        static uint32_t sCalls = 0, sGaps = 0;
++        static int32_t sMinBuffered = INT32_MAX;
++        const int32_t buffered = Buffered();
++        if (buffered == 0 && sCalls > 0) {
++            ++sGaps;
++        }
++        if (buffered < sMinBuffered) {
++            sMinBuffered = buffered;
++        }
++        if (++sCalls % 512 == 0) { // roughly every 25 s of audio
++            SPDLOG_INFO("NDSP pacing: {} refills, {} gaps, min buffered {} frames", sCalls, sGaps, sMinBuffered);
++            sMinBuffered = INT32_MAX;
++        }
++    }
++
++    size_t framesLeft = len / (kChannels * sizeof(int16_t));
++    const int16_t* source = reinterpret_cast<const int16_t*>(buf);
++
++    // SoH's batches (<= 1680 frames) fit one wave; the loop only matters if a
++    // caller ever submits more than kFramesPerBuffer at once.
++    while (framesLeft > 0) {
++        const size_t frameCount = std::min(framesLeft, kFramesPerBuffer);
++
++        BufferLockGuard lock;
++        auto buffer = std::find_if(sBuffers.begin(), sBuffers.end(),
++                                   [](const AudioBuffer& candidate) { return IsReusable(candidate.wave); });
++        if (buffer == sBuffers.end()) {
++            // Pool full: the producer guard normally prevents this. Dropping
++            // is preferable to blocking the synthesis thread.
++            if (++sDroppedBatches <= 4 || sDroppedBatches % 128 == 0) {
++                SPDLOG_WARN("NDSP wave pool full, dropped batch ({} total)", sDroppedBatches);
++            }
++            return;
++        }
++        if (!sInitialized || buffer->samples == nullptr) {
++            // Torn down between the unlocked entry check and this lock.
++            return;
++        }
++
++        const size_t byteCount = frameCount * kChannels * sizeof(int16_t);
++        std::memcpy(buffer->samples, source, byteCount);
++        // svcFlushProcessDataCache provides the coherency NDSP needs at a
++        // fraction of DSP_FlushDataCache's cost (MK64-3DS measurement).
++        svcFlushProcessDataCache(CUR_PROCESS_HANDLE, reinterpret_cast<u32>(buffer->samples),
++                                 static_cast<u32>(byteCount));
++        std::memset(&buffer->wave, 0, sizeof(buffer->wave));
++        buffer->wave.data_vaddr = buffer->samples;
++        buffer->wave.nsamples = static_cast<u32>(frameCount);
++        buffer->wave.looping = false;
++        ndspChnWaveBufAdd(kChannel, &buffer->wave);
++
++        source += frameCount * kChannels;
++        framesLeft -= frameCount;
++    }
++}
++
++} // namespace Ship
++
++#endif // __3DS__
+diff --git a/src/ship/audio/NullAudioPlayer.cpp b/src/ship/audio/NullAudioPlayer.cpp
+index 780c84d..e60e4d4 100644
+--- a/src/ship/audio/NullAudioPlayer.cpp
++++ b/src/ship/audio/NullAudioPlayer.cpp
+@@ -15,7 +15,7 @@ void NullAudioPlayer::DoClose() {
+     // Nothing to close for null player
+ }
+ 
+-int NullAudioPlayer::Buffered() {
++int32_t NullAudioPlayer::Buffered() {
+     // Report the device as always full; it discards all audio, so returning the
+     // true count (0) makes the producer spin feeding it forever and hang.
+     return GetDesiredBuffered();
+diff --git a/src/ship/audio/SDLAudioPlayer.cpp b/src/ship/audio/SDLAudioPlayer.cpp
+index d9f1e44..4156cb5 100644
+--- a/src/ship/audio/SDLAudioPlayer.cpp
++++ b/src/ship/audio/SDLAudioPlayer.cpp
+@@ -49,7 +49,7 @@ bool SDLAudioPlayer::DoInit() {
+     return true;
+ }
+ 
+-int SDLAudioPlayer::Buffered() {
++int32_t SDLAudioPlayer::Buffered() {
+     return SDL_GetQueuedAudioSize(mDevice) / (sizeof(int16_t) * mNumChannels);
+ }
+ 
+diff --git a/src/ship/audio/WasapiAudioPlayer.cpp b/src/ship/audio/WasapiAudioPlayer.cpp
+index f7570d8..f0b2342 100644
+--- a/src/ship/audio/WasapiAudioPlayer.cpp
++++ b/src/ship/audio/WasapiAudioPlayer.cpp
+@@ -113,7 +113,7 @@ void WasapiAudioPlayer::DoClose() {
+     mStarted = false;
+ }
+ 
+-int WasapiAudioPlayer::Buffered() {
++int32_t WasapiAudioPlayer::Buffered() {
+     std::lock_guard<std::mutex> lock(mMutex);
+     if (!mInitialized) {
+         if (!SetupStream()) {
+diff --git a/src/ship/controller/controldevice/controller/mapping/sdl/SDLGyroMapping.cpp b/src/ship/controller/controldevice/controller/mapping/sdl/SDLGyroMapping.cpp
+index 751e68b..f972fb2 100644
+--- a/src/ship/controller/controldevice/controller/mapping/sdl/SDLGyroMapping.cpp
++++ b/src/ship/controller/controldevice/controller/mapping/sdl/SDLGyroMapping.cpp
+@@ -7,6 +7,65 @@
+ #include "ship/utils/StringHelper.h"
+ #include "ship/controller/controldeck/ControlDeck.h"
+ 
++
++#ifdef __3DS__
++#include <cmath>
++#include <cstdint>
++
++// SoH-3DS: SDL's 3DS joystick driver has no controller-attached sensors
++// (its SetSensorsEnabled returns SDL_Unsupported), so
++// SDL_GameControllerHasSensor(SDL_SENSOR_GYRO) is always false and the
++// gamepad loops below can never find a gyro. The gyroscope exists as a
++// standalone SDL_Sensor instead, and SDL's n3ds sensor driver passes
++// hidGyroRead()'s raw angular rate through untouched - so open that sensor
++// lazily and normalize raw ticks to rad/s (the unit controller-attached
++// gyros report), keeping the sensitivity scale comparable to desktop.
++extern "C" int32_t HIDUSER_GetGyroscopeRawToDpsCoefficient(float* coeff);
++extern "C" int32_t HIDUSER_EnableGyroscope(void);
++
++namespace {
++bool Soh3dsReadGyroRadians(float out[3]) {
++    static SDL_Sensor* sGyro = nullptr;
++    static float sRadiansPerRaw = 0.0f;
++    static bool sTried = false;
++    if (!sTried) {
++        sTried = true;
++        if (SDL_InitSubSystem(SDL_INIT_SENSOR) == 0) {
++            for (int index = 0; index < SDL_NumSensors(); ++index) {
++                if (SDL_SensorGetDeviceType(index) == SDL_SENSOR_GYRO) {
++                    sGyro = SDL_SensorOpen(index);
++                    break;
++                }
++            }
++        }
++        if (sGyro != nullptr) {
++            // raw = dps * coefficient (nominally 14.375); guard against a
++            // failed or nonsense read with that nominal value.
++            float rawPerDps = 0.0f;
++            if (HIDUSER_GetGyroscopeRawToDpsCoefficient(&rawPerDps) != 0 || rawPerDps <= 0.0f) {
++                rawPerDps = 14.375f;
++            }
++            sRadiansPerRaw = static_cast<float>(M_PI / 180.0) / rawPerDps;
++            SPDLOG_INFO("SoH-3DS gyro: opened SDL sensor, raw/dps={}", rawPerDps);
++        } else {
++            SPDLOG_WARN("SoH-3DS gyro: no SDL gyro sensor available");
++        }
++    }
++    if (sGyro == nullptr) {
++        return false;
++    }
++    SDL_SensorUpdate();
++    float raw[3] = {};
++    if (SDL_SensorGetData(sGyro, raw, 3) != 0) {
++        return false;
++    }
++    out[0] = raw[0] * sRadiansPerRaw;
++    out[1] = raw[1] * sRadiansPerRaw;
++    out[2] = raw[2] * sRadiansPerRaw;
++    return true;
++}
++} // namespace
++#endif
+ namespace Ship {
+ SDLGyroMapping::SDLGyroMapping(uint8_t portIndex, float sensitivity, float neutralPitch, float neutralYaw,
+                                float neutralRoll)
+@@ -16,6 +75,17 @@ SDLGyroMapping::SDLGyroMapping(uint8_t portIndex, float sensitivity, float neutr
+ }
+ 
+ void SDLGyroMapping::Recalibrate() {
++#ifdef __3DS__
++    {
++        float gyroRadians[3];
++        if (Soh3dsReadGyroRadians(gyroRadians)) {
++            mNeutralPitch = gyroRadians[0];
++            mNeutralYaw = gyroRadians[1];
++            mNeutralRoll = gyroRadians[2];
++            return;
++        }
++    }
++#endif
+     for (const auto& [instanceId, gamepad] : Context::GetRawInstance()
+                                                  ->GetControlDeck()
+                                                  ->GetConnectedPhysicalDeviceManager()
+@@ -48,6 +118,17 @@ void SDLGyroMapping::UpdatePad(float& x, float& y) {
+         return;
+     }
+ 
++#ifdef __3DS__
++    {
++        float gyroRadians[3];
++        if (Soh3dsReadGyroRadians(gyroRadians)) {
++            x = (gyroRadians[0] - mNeutralPitch) * mSensitivity;
++            y = (gyroRadians[1] - mNeutralYaw) * mSensitivity;
++            return;
++        }
++    }
++#endif
++
+     for (const auto& [instanceId, gamepad] : Context::GetRawInstance()
+                                                  ->GetControlDeck()
+                                                  ->GetConnectedPhysicalDeviceManager()
+diff --git a/src/ship/resource/ResourceLoader.cpp b/src/ship/resource/ResourceLoader.cpp
+index e9adf34..3f61cbd 100644
+--- a/src/ship/resource/ResourceLoader.cpp
++++ b/src/ship/resource/ResourceLoader.cpp
+@@ -233,8 +233,27 @@ std::shared_ptr<ResourceInitData> ResourceLoader::ResolveMetaAlias(const std::st
+     return metaInitData;
+ }
+ 
++
++#ifdef __3DS__
++// SoH-3DS: handler-entry ground truth. The debug question "does this catch
++// ever engage on a real OOM" cannot be answered from logs alone (grep-sampled
++// streams, sessions dying mid-sequence). Relaxed atomic: loads run on pool
++// workers while the gfx heartbeat reads from the render thread.
++#include <atomic>
++static std::atomic<unsigned> sSoh3dsResourceCatchCount{ 0 };
++extern "C" unsigned Soh3dsResourceCatchCount(void) {
++    return sSoh3dsResourceCatchCount.load(std::memory_order_relaxed);
++}
++#endif
+ std::shared_ptr<IResource> ResourceLoader::LoadResource(std::string filePath, std::shared_ptr<File> fileToLoad,
+                                                         std::shared_ptr<ResourceInitData> initData) {
++#ifdef __3DS__
++    // SoH-3DS: factories and readers throw (runtime_error on malformed data,
++    // out_of_range on truncated streams, bad_alloc at the 66 MB heap ceiling)
++    // and nothing above this frame catches, so any bad or oversized asset was
++    // std::terminate. A null return rides the existing missing-resource paths.
++    try {
++#endif
+     // fileToLoad is the highest-priority real asset at filePath, or null when the resource
+     // exists only as a `.meta` alias. Prefer a winning alias, else read the real asset's header.
+     bool legacyInitData = false;
+@@ -272,7 +291,31 @@ std::shared_ptr<IResource> ResourceLoader::LoadResource(std::string filePath, st
+     }
+ 
+     return factory->ReadResource(fileToLoad, initData);
++#ifdef __3DS__
++    } catch (const std::exception& e) {
++        // Allocation-free on purpose: a bad_alloc caught here at the heap
++        // ceiling must not allocate again (SPDLOG formats via fmt = malloc).
++        // Counter FIRST: fprintf may itself fail at the ceiling.
++        sSoh3dsResourceCatchCount.fetch_add(1, std::memory_order_relaxed);
++        std::fprintf(stderr, "resource: exception loading %s: %s\n", filePath.c_str(), e.what());
++        return nullptr;
++    } catch (...) {
++        sSoh3dsResourceCatchCount.fetch_add(1, std::memory_order_relaxed);
++        std::fprintf(stderr, "resource: unknown exception loading %s\n", filePath.c_str());
++        return nullptr;
++    }
++#endif
++}
++
++#ifdef __3DS__
++// SoH-3DS: boot-time unwind self-test. Throws from inside libultraship.a so
++// the port main can verify a cross-archive throw reaches a catch (a hardware
++// session showed a bad_alloc bypassing the handler above; whether unwinding
++// works across these static libraries has never been proven).
++extern "C" void Soh3dsUnwindThrowTest() {
++    throw std::runtime_error("unwind-test");
+ }
++#endif
+ 
+ uint32_t ResourceLoader::GetResourceType(const std::string& type) {
+     return mResourceTypes.contains(type) ? mResourceTypes[type] : static_cast<uint32_t>(ResourceType::None);
+diff --git a/src/ship/resource/ResourceManager.cpp b/src/ship/resource/ResourceManager.cpp
+index c62ee72..6d7a425 100644
+--- a/src/ship/resource/ResourceManager.cpp
++++ b/src/ship/resource/ResourceManager.cpp
+@@ -57,7 +57,7 @@ void ResourceManager::Init(const std::vector<std::string>& archivePaths,
+     GetArchiveManager()->Init(archivePaths, validHashes);
+ 
+     // the extra `- 1` is because we reserve an extra thread for spdlog
+-    size_t threadCount = std::max(1, (int32_t)(std::thread::hardware_concurrency() - reservedThreadCount - 1));
++    size_t threadCount = std::max<int32_t>(1, (int32_t)(std::thread::hardware_concurrency() - reservedThreadCount - 1));
+     mThreadPool = std::make_shared<BS::thread_pool>(threadCount);
+ 
+     if (!IsLoaded()) {
+@@ -152,12 +152,46 @@ std::shared_ptr<IResource> ResourceManager::LoadResourceProcess(const ResourceId
+     // Get the file from the OTR. It may be null when the resource exists only as a `.meta`
+     // alias (no real file at this path); fall through so the loader can resolve the alias,
+     // but only when a `.meta` for this path actually exists.
++#ifdef __3DS__
++    // SoH-3DS: LoadFileProcess runs BEFORE ResourceLoader::LoadResource's own
++    // catch, and any archive implementation can throw here (hardware
++    // throw-tracer caught a bad_alloc in O2rArchive's buffer allocation at
++    // the heap ceiling). One catch at this boundary covers every archive
++    // source - including the ".meta" string concat below, which also
++    // allocates. Allocation-free handler; failure is cached like NotFound.
++    std::shared_ptr<File> file = nullptr;
++    bool missingWithoutMeta = false;
++    try {
++        file = LoadFileProcess(identifier.Path);
++        missingWithoutMeta = file == nullptr && !mArchiveManager->HasFile(identifier.Path + ".meta");
++    } catch (const std::exception& e) {
++        std::fprintf(stderr, "resource: file load threw for %s: %s\n", identifier.Path.c_str(), e.what());
++        // Transient failure (heap ceiling): return null WITHOUT the negative
++        // cache below - once memory is reclaimed (eviction, scene change) a
++        // retry of this same path must be allowed to succeed. Only a true
++        // absent file earns the permanent NotFound cache line.
++        return nullptr;
++    }
++    if (missingWithoutMeta) {
++        SPDLOG_TRACE("Failed to load resource file at path {}", identifier.Path);
++        // SoH-3DS: mResourceCache mutation MUST hold mMutex - the core-2 audio
++        // thread loads synchronously while the game thread runs CheckCache and
++        // the scene-eviction UnloadResources; an unlocked insert can rehash
++        // under a concurrent locked find (heap corruption class).
++        const std::lock_guard<std::mutex> lock(mMutex);
++        mResourceCache[identifier] = ResourceLoadError::NotFound;
++        return nullptr;
++    }
++#else
+     auto file = LoadFileProcess(identifier.Path);
+     if (file == nullptr && !mArchiveManager->HasFile(identifier.Path + ".meta")) {
+         SPDLOG_TRACE("Failed to load resource file at path {}", identifier.Path);
++        // SoH-3DS: locked for the same reason as the 3DS branch above.
++        const std::lock_guard<std::mutex> lock(mMutex);
+         mResourceCache[identifier] = ResourceLoadError::NotFound;
+         return nullptr;
+     }
++#endif
+ 
+     // Transform the raw data into a resource
+     auto resource = GetResourceLoader()->LoadResource(identifier.Path, file, initData);
+@@ -229,7 +263,30 @@ ResourceManager::LoadResourceAsync(const std::string& filePath, bool loadExact,
+ 
+ std::shared_ptr<IResource> ResourceManager::LoadResource(const ResourceIdentifier& identifier, bool loadExact,
+                                                          std::shared_ptr<ResourceInitData> initData) {
++#ifdef __3DS__
++    // SoH-3DS: run the load on the calling thread instead of submitting it to the
++    // pool and blocking on the future.
++    //
++    // threadCount is max(1, hardware_concurrency() - reserved - 1), which on a
++    // 2-core handheld is 1. A single worker deadlocks the moment a load nested
++    // inside LoadResourceProcess calls LoadResource again: the only worker is
++    // already blocked in .get() waiting for a task that only it could run.
++    // That is exactly how startup stalled - in the first resource patch, with no
++    // fault and no memory pressure.
++    //
++    // The pool also buys little here. Loads are SD-card bound, the archive index
++    // is already in memory, and both usable cores are wanted for the game and
++    // audio. Asynchronous callers still get the pool via LoadResourceAsync.
++    if (OtrSignatureCheck(identifier.Path.c_str())) {
++        return LoadResource({ identifier.Path.substr(7), identifier.Owner, identifier.Parent }, loadExact, initData);
++    }
++    if (auto cached = GetCachedResource(identifier, loadExact)) {
++        return cached;
++    }
++    auto resource = LoadResourceProcess(identifier, loadExact, initData);
++#else
+     auto resource = LoadResourceAsync(identifier, loadExact, BS::pr::highest, initData).get();
++#endif
+     if (resource == nullptr) {
+         SPDLOG_TRACE("Failed to load resource file at path {}", identifier.Path);
+     }
+@@ -348,7 +405,8 @@ std::shared_ptr<std::vector<std::shared_ptr<IResource>>> ResourceManager::LoadRe
+     return LoadResources({ { searchMask }, {}, mDefaultCacheOwner, mDefaultCacheArchive });
+ }
+ 
+-std::shared_ptr<std::vector<std::shared_ptr<IResource>>> ResourceManager::LoadResources(const ResourceFilter& filter) {
++std::shared_ptr<std::vector<std::shared_ptr<IResource>>>
++ResourceManager::LoadResources(const ResourceFilter& filter) {
+     return LoadResourcesAsync(filter, BS::pr::highest).get();
+ }
+ 
+@@ -411,17 +469,26 @@ std::shared_ptr<ResourceLoader> ResourceManager::GetResourceLoader() {
+ }
+ 
+ size_t ResourceManager::UnloadResource(const ResourceIdentifier& identifier) {
+-    // Store a shared pointer here so that erase doesn't destruct the resource.
+-    // The resource will attempt to load other resources on the destructor, and this will fail because we already hold
+-    // the mutex.
++    // Hold the cache line's value across the erase so the resource is NOT
++    // destructed while mMutex is held (a destructor that re-enters the
++    // ResourceManager would self-deadlock a non-recursive mutex). The old
++    // code declared this intent but never assigned `value`; it also ran
++    // contains() before taking the lock (rehash race against concurrent
++    // inserts). Lookup, move-out, and erase all happen under the lock;
++    // destruction happens after it is released.
+     std::variant<ResourceLoadError, std::shared_ptr<IResource>> value = nullptr;
+     size_t ret = 0;
+-    // We can only erase the resource if we have any resources for that owner.
+-    if (mResourceCache.contains(identifier)) {
++    {
+         const std::lock_guard<std::mutex> lock(mMutex);
+-        mResourceCache.erase(identifier);
++        auto it = mResourceCache.find(identifier);
++        if (it == mResourceCache.end()) {
++            return ret;
++        }
++        value = std::move(it->second);
++        mResourceCache.erase(it);
++        ret = 1;
+     }
+-
++    // `value` releases its reference here, outside the lock.
+     return ret;
+ }
+ 
+diff --git a/src/ship/resource/archive/Archive.cpp b/src/ship/resource/archive/Archive.cpp
+index d8799ff..ab31a63 100644
+--- a/src/ship/resource/archive/Archive.cpp
++++ b/src/ship/resource/archive/Archive.cpp
+@@ -112,6 +112,11 @@ std::shared_ptr<File> Archive::LoadFile(uint64_t hash) {
+     return LoadFile(filePath);
+ }
+ 
++const std::string* Archive::HashToString(uint64_t hash) const {
++    const auto it = mHashes->find(hash);
++    return it != mHashes->end() ? &it->second : nullptr;
++}
++
+ std::shared_ptr<std::unordered_map<uint64_t, std::string>> Archive::ListFiles() {
+     return mHashes;
+ }
+diff --git a/src/ship/resource/archive/ArchiveManager.cpp b/src/ship/resource/archive/ArchiveManager.cpp
+index 463ae99..25cb84b 100644
+--- a/src/ship/resource/archive/ArchiveManager.cpp
++++ b/src/ship/resource/archive/ArchiveManager.cpp
+@@ -47,8 +47,20 @@ std::shared_ptr<File> ArchiveManager::LoadFile(const std::string& filePath) {
+     return LoadFile(CRC64(filePath.c_str()));
+ }
+ 
++std::shared_ptr<Archive> ArchiveManager::ResolveArchive(uint64_t hash) const {
++    // Descending priority: index in mArchives *is* the priority, and the last
++    // archive added wins conflicts, so the highest index must be consulted first.
++    for (auto it = mArchives.rbegin(); it != mArchives.rend(); ++it) {
++        const auto& archive = *it;
++        if (archive != nullptr && archive->HasFile(hash)) {
++            return archive;
++        }
++    }
++    return nullptr;
++}
++
+ std::shared_ptr<File> ArchiveManager::LoadFile(uint64_t hash) {
+-    auto archive = mFileToArchive[hash];
++    const auto archive = ResolveArchive(hash);
+     if (archive == nullptr) {
+         return nullptr;
+     }
+@@ -61,19 +73,16 @@ bool ArchiveManager::HasFile(const std::string& filePath) {
+ }
+ 
+ bool ArchiveManager::HasFile(uint64_t hash) {
+-    return mFileToArchive.count(hash) > 0;
++    return ResolveArchive(hash) != nullptr;
+ }
+ 
+ std::shared_ptr<Archive> ArchiveManager::GetArchiveFromFile(const std::string& filePath) {
+-    return mFileToArchive[CRC64(filePath.c_str())];
++    return ResolveArchive(CRC64(filePath.c_str()));
+ }
+ 
+ int32_t ArchiveManager::GetFilePriority(const std::string& filePath) {
+-    auto it = mFileToArchive.find(CRC64(filePath.c_str()));
+-    if (it == mFileToArchive.end() || it->second == nullptr) {
+-        return -1;
+-    }
+-    return it->second->GetPriority();
++    const auto archive = ResolveArchive(CRC64(filePath.c_str()));
++    return archive != nullptr ? archive->GetPriority() : -1;
+ }
+ 
+ std::shared_ptr<std::vector<std::string>> ArchiveManager::ListFiles(const std::string& searchMask) {
+@@ -87,31 +96,41 @@ std::shared_ptr<std::vector<std::string>> ArchiveManager::ListFiles(const std::s
+ std::shared_ptr<std::vector<std::string>> ArchiveManager::ListFiles(const std::list<std::string>& includes,
+                                                                     const std::list<std::string>& excludes) {
+     auto list = std::make_shared<std::vector<std::string>>();
+-    for (const auto& [hash, path] : mHashes) {
+-        if (includes.empty() && excludes.empty()) {
+-            list->push_back(path);
++    for (const auto& archive : mArchives) {
++        if (archive == nullptr) {
+             continue;
+         }
+-        bool includeMatch = includes.empty();
+-        if (!includes.empty()) {
+-            for (std::string filter : includes) {
+-                if (glob_match(filter.c_str(), path.c_str())) {
+-                    includeMatch = true;
+-                    break;
++        for (const auto& [hash, path] : *archive->ListFiles()) {
++            // Emit each hash once, from whichever archive wins it, so a file
++            // present in several archives is not listed per copy.
++            if (ResolveArchive(hash) != archive) {
++                continue;
++            }
++            if (includes.empty() && excludes.empty()) {
++                list->push_back(path);
++                continue;
++            }
++            bool includeMatch = includes.empty();
++            if (!includes.empty()) {
++                for (const auto& filter : includes) {
++                    if (glob_match(filter.c_str(), path.c_str())) {
++                        includeMatch = true;
++                        break;
++                    }
+                 }
+             }
+-        }
+-        bool excludeMatch = false;
+-        if (!excludes.empty()) {
+-            for (std::string filter : excludes) {
+-                if (glob_match(filter.c_str(), path.c_str())) {
+-                    excludeMatch = true;
+-                    break;
++            bool excludeMatch = false;
++            if (!excludes.empty()) {
++                for (const auto& filter : excludes) {
++                    if (glob_match(filter.c_str(), path.c_str())) {
++                        excludeMatch = true;
++                        break;
++                    }
+                 }
+             }
+-        }
+-        if (includeMatch && !excludeMatch) {
+-            list->push_back(path);
++            if (includeMatch && !excludeMatch) {
++                list->push_back(path);
++            }
+         }
+     }
+     return list;
+@@ -149,8 +168,6 @@ void ArchiveManager::ResetVirtualFileSystem() {
+     auto archives = mArchives;
+     mArchives.clear();
+     mGameVersions.clear();
+-    mHashes.clear();
+-    mFileToArchive.clear();
+     for (const auto& archive : archives) {
+         archive->Unload();
+         archive->Load();
+@@ -163,8 +180,6 @@ bool ArchiveManager::WriteFile(std::shared_ptr<Archive> archive, const std::stri
+     if (archive) {
+         if (archive->WriteFile(filePath, data)) {
+             auto hash = CRC64(filePath.c_str());
+-            mHashes[hash] = filePath;
+-            mFileToArchive[hash] = archive;
+             return true; // Successfully wrote file
+         }
+     }
+@@ -201,8 +216,8 @@ void ArchiveManager::SetArchives(std::shared_ptr<std::vector<std::shared_ptr<Arc
+ }
+ 
+ const std::string* ArchiveManager::HashToString(uint64_t hash) const {
+-    auto it = mHashes.find(hash);
+-    return it != mHashes.end() ? &it->second : nullptr;
++    const auto archive = ResolveArchive(hash);
++    return archive != nullptr ? archive->HashToString(hash) : nullptr;
+ }
+ 
+ const char* ArchiveManager::HashToCString(uint64_t hash) const {
+@@ -290,8 +305,6 @@ std::shared_ptr<Archive> ArchiveManager::AddArchive(std::shared_ptr<Archive> arc
+     }
+     const auto fileList = archive->ListFiles();
+     for (auto& [hash, filename] : *fileList.get()) {
+-        mHashes[hash] = filename;
+-        mFileToArchive[hash] = archive;
+ 
+         size_t lastSlash = filename.find_last_of('/');
+         if (lastSlash != std::string::npos) {
+diff --git a/src/ship/resource/archive/O2rArchive.cpp b/src/ship/resource/archive/O2rArchive.cpp
+index 13d9750..cd0caf7 100644
+--- a/src/ship/resource/archive/O2rArchive.cpp
++++ b/src/ship/resource/archive/O2rArchive.cpp
+@@ -77,7 +77,25 @@ std::shared_ptr<File> O2rArchive::LoadFile(const std::string& filePath) {
+     }
+ 
+     auto fileToLoad = std::make_shared<File>();
++#ifdef __3DS__
++    // SoH-3DS: this buffer allocation is the file-load path's OOM throw site
++    // (hardware throw-tracer session: __cxa_throw <- operator new <- here <-
++    // ArchiveManager::LoadFile <- ResourceManager::LoadFileProcess) and it
++    // runs OUTSIDE ResourceLoader::LoadResource's catch. Degrade to a null
++    // file - callers already handle "file failed to load" - instead of
++    // std::terminate. Allocation-free handler.
++    try {
++        fileToLoad->Buffer = std::make_shared<std::vector<char>>(zipEntryStat.size);
++    } catch (const std::exception& e) {
++        std::fprintf(stderr, "resource: file buffer alloc failed (%lu bytes): %s\n",
++                     (unsigned long)zipEntryStat.size, e.what());
++        zip_fclose(zipEntryFile);
++        ReleaseZipHandle(zipArchive);
++        return nullptr;
++    }
++#else
+     fileToLoad->Buffer = std::make_shared<std::vector<char>>(zipEntryStat.size);
++#endif
+ 
+     if (zip_fread(zipEntryFile, fileToLoad->Buffer->data(), zipEntryStat.size) < 0) {
+         SPDLOG_TRACE("Error reading file {} in zip archive  {}.", filePath, GetPath());
+diff --git a/src/ship/utils/binarytools/BinaryWriter.cpp b/src/ship/utils/binarytools/BinaryWriter.cpp
+index 9bcb0e0..b3bb4cc 100644
+--- a/src/ship/utils/binarytools/BinaryWriter.cpp
++++ b/src/ship/utils/binarytools/BinaryWriter.cpp
+@@ -133,7 +133,9 @@ void Ship::BinaryWriter::Write(double value) {
+ }
+ 
+ void Ship::BinaryWriter::Write(const std::string& str) {
+-    int strLen = str.size();
++    // SoH-3DS: was `int`, which is ambiguous against the int32_t/int64_t
++    // overloads on targets where int32_t is not int. The wire format is 32-bit.
++    int32_t strLen = static_cast<int32_t>(str.size());
+     Write(strLen);
+ 
+     for (char c : str) {
+diff --git a/src/ship/window/gui/Gui.cpp b/src/ship/window/gui/Gui.cpp
+index 1f9279b..124a22d 100644
+--- a/src/ship/window/gui/Gui.cpp
++++ b/src/ship/window/gui/Gui.cpp
+@@ -315,6 +315,17 @@ void Gui::CheckSaveCvars() {
+ }
+ 
+ void Gui::StartDraw() {
++#ifdef __3DS__
++    // SoH-3DS: ImGui is not used on this port. There is no citro3d ImGui
++    // backend, and the bottom screen is drawn with citro2d instead, following
++    // mario-kart-64-3ds - which excludes ImGui outright for the same reasons.
++    //
++    // Nothing here is needed without it: StartFrame only drives ImGui::NewFrame,
++    // DrawMenu emits ImGui menus, and CalculateGameViewport sizes the game to
++    // whatever space ImGui left, whereas this backend draws the game straight to
++    // the top screen at a fixed 400x240.
++    return;
++#endif
+     // Initialize the frame.
+     StartFrame();
+     // Draw the gui menus
+@@ -324,6 +335,13 @@ void Gui::StartDraw() {
+ }
+ 
+ void Gui::EndDraw() {
++#ifdef __3DS__
++    // Only the CVar flush is wanted here: DrawGame blits the game framebuffer
++    // into an ImGui window, EndFrame renders ImGui draw data and
++    // DrawFloatingWindows is ImGui too. Settings must still persist.
++    CheckSaveCvars();
++    return;
++#endif
+     // Draw the game framebuffer into ImGui
+     DrawGame();
+     // End the frame
+diff --git a/src/ship/window/gui/resource/GuiTextureFactory.cpp b/src/ship/window/gui/resource/GuiTextureFactory.cpp
+index 5c7918b..c63c04b 100644
+--- a/src/ship/window/gui/resource/GuiTextureFactory.cpp
++++ b/src/ship/window/gui/resource/GuiTextureFactory.cpp
+@@ -16,9 +16,14 @@ ResourceFactoryBinaryGuiTextureV0::ReadResource(std::shared_ptr<File> file,
+     guiTexture->DataSize = file->Buffer->size();
+     guiTexture->Metadata.Width = 0;
+     guiTexture->Metadata.Height = 0;
+-    guiTexture->Data =
+-        stbi_load_from_memory(reinterpret_cast<const stbi_uc*>(file->Buffer->data()), guiTexture->DataSize,
+-                              &guiTexture->Metadata.Width, &guiTexture->Metadata.Height, nullptr, 4);
++    // SoH-3DS: stb_image writes through int*, but Metadata.{Width,Height} are
++    // int32_t, which is not int on devkitARM. Take the values in ints and copy.
++    int stbWidth = 0;
++    int stbHeight = 0;
++    guiTexture->Data = stbi_load_from_memory(reinterpret_cast<const stbi_uc*>(file->Buffer->data()),
++                                             guiTexture->DataSize, &stbWidth, &stbHeight, nullptr, 4);
++    guiTexture->Metadata.Width = stbWidth;
++    guiTexture->Metadata.Height = stbHeight;
+ 
+     if (guiTexture->Data == nullptr) {
+         SPDLOG_ERROR("Error loading imgui texture {}", stbi_failure_reason());

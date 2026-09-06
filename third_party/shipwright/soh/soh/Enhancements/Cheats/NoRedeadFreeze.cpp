@@ -1,0 +1,13 @@
+#include "soh/Enhancements/game-interactor/GameInteractor.h"
+#include "soh/ShipInit.hpp"
+#include "soh/cvar_prefixes.h"
+
+static constexpr int32_t CVAR_NOREDEADFREEZE_DEFAULT = 0;
+#define CVAR_NOREDEADFREEZE_NAME CVAR_CHEAT("NoRedeadFreeze")
+#define CVAR_NOREDEADFREEZE_VALUE CVarGetInteger(CVAR_NOREDEADFREEZE_NAME, CVAR_NOREDEADFREEZE_DEFAULT)
+
+void RegisterNoRedeadFreeze() {
+    COND_VB_SHOULD(VB_REDEAD_GIBDO_FREEZE_LINK, CVAR_NOREDEADFREEZE_VALUE, { *should = false; });
+}
+
+static RegisterShipInitFunc initFunc(RegisterNoRedeadFreeze, { CVAR_NOREDEADFREEZE_NAME });

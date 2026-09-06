@@ -1,0 +1,36 @@
+#include "soh/ResourceManagerHelpers.h"
+#include <libultraship/bridge/consolevariablebridge.h>
+#include "soh/ShipInit.hpp"
+#include "z64save.h"
+#include "objects/object_gi_compass/object_gi_compass.h"
+#include "objects/object_gi_map/object_gi_map.h"
+#include "soh/Enhancements/randomizer/SeedContext.h"
+
+extern "C" {
+#include "variables.h"
+#include "macros.h"
+}
+
+#define CVAR_COLORED_MAPS_AND_COMPASSES_NAME CVAR_RANDOMIZER_ENHANCEMENT("ColoredMapsAndCompasses")
+#define CVAR_COLORED_MAPS_AND_COMPASSES_DEFAULT 1
+#define CVAR_COLORED_MAPS_AND_COMPASSES_VALUE \
+    CVarGetInteger(CVAR_COLORED_MAPS_AND_COMPASSES_NAME, CVAR_COLORED_MAPS_AND_COMPASSES_DEFAULT)
+
+void RegisterColoredMapsAndCompasses() {
+    bool mapsAndCompassesCanBeOutsideDungeon =
+        IS_RANDO && DUNGEON_ITEMS_CAN_BE_OUTSIDE_DUNGEON(RSK_SHUFFLE_MAPANDCOMPASS);
+    if (mapsAndCompassesCanBeOutsideDungeon && CVAR_COLORED_MAPS_AND_COMPASSES_VALUE) {
+        ResourceMgr_PatchGfxByName(gGiDungeonMapDL, "Map_PrimColor", 5, gsDPNoOp());
+        ResourceMgr_PatchGfxByName(gGiDungeonMapDL, "Map_EnvColor", 6, gsDPNoOp());
+        ResourceMgr_PatchGfxByName(gGiCompassDL, "Compass_PrimColor", 5, gsDPNoOp());
+        ResourceMgr_PatchGfxByName(gGiCompassDL, "Compass_EnvColor", 6, gsDPNoOp());
+    } else {
+        ResourceMgr_UnpatchGfxByName(gGiDungeonMapDL, "Map_PrimColor");
+        ResourceMgr_UnpatchGfxByName(gGiDungeonMapDL, "Map_EnvColor");
+        ResourceMgr_UnpatchGfxByName(gGiCompassDL, "Compass_PrimColor");
+        ResourceMgr_UnpatchGfxByName(gGiCompassDL, "Compass_EnvColor");
+    }
+}
+
+static RegisterShipInitFunc initFunc(RegisterColoredMapsAndCompasses,
+                                     { "IS_RANDO", CVAR_COLORED_MAPS_AND_COMPASSES_NAME });

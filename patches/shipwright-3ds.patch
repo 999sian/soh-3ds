@@ -1,0 +1,3651 @@
+diff --git a/soh/include/functions.h b/soh/include/functions.h
+index 659306dc..0d550593 100644
+--- a/soh/include/functions.h
++++ b/soh/include/functions.h
+@@ -63,7 +63,18 @@ u32 Locale_IsRegionNative(void);
+ void _assert(const char* exp, const char* file, s32 line);
+ #elif defined(__linux__)
+ void __assert(const char* exp, const char* file, s32 line) __THROW;
+-#elif !defined(__APPLE__) && !defined(__SWITCH__) && !defined(__OpenBSD__)
++// SoH-3DS: devkitARM ships newlib, whose assert.h declares __assert with a
++// DIFFERENT argument order - (file, line, expr) rather than N64's
++// (expr, file, line). That is the same reason __SWITCH__ (devkitA64, also
++// newlib) is excluded here.
++//
++// Suppressing the declaration is safe only because nothing calls it:
++// verified that __assert appears nowhere in soh/ except these three
++// declarations, and the ASSERT macro routes to newlib's assert(), which
++// calls __assert_func. If a call site is ever added, this must become a
++// rename (__assert -> soh_assert) instead, or the arguments bind in the
++// wrong order.
++#elif !defined(__APPLE__) && !defined(__SWITCH__) && !defined(__OpenBSD__) && !defined(__3DS__)
+ void __assert(const char* exp, const char* file, s32 line);
+ #endif
+ #if defined(__APPLE__) && defined(NDEBUG)
+@@ -1962,7 +1973,8 @@ void* AudioHeap_AllocPermanent(s32 tableType, s32 id, size_t size);
+ void* AudioHeap_AllocSampleCache(size_t size, s32 fontId, void* sampleAddr, s8 medium, s32 cache);
+ void AudioHeap_ApplySampleBankCache(s32 sampleBankId);
+ void AudioLoad_DecreaseSampleDmaTtls(void);
+-uintptr_t AudioLoad_DmaSampleData(uintptr_t devAddr, size_t size, s32 arg2, u8* dmaIndexRef, s32 medium);
++uintptr_t AudioLoad_DmaSampleData(uintptr_t devAddr, size_t size, s32 arg2, u8* dmaIndexRef, s32 medium,
++                                  size_t maxBytes);
+ void AudioLoad_InitSampleDmaBuffers(s32 arg0);
+ s32 AudioLoad_IsFontLoadComplete(s32 fontId);
+ s32 AudioLoad_IsSeqLoadComplete(s32 seqId);
+diff --git a/soh/include/z64collision_check.h b/soh/include/z64collision_check.h
+index 6a0b4bb9..a73b0d03 100644
+--- a/soh/include/z64collision_check.h
++++ b/soh/include/z64collision_check.h
+@@ -1,3 +1,11 @@
++
++// SoH-3DS: newlib's <sys/types.h> defines a legacy BSD compatibility macro
++// `#define quad quad_t`, which silently rewrites ColliderQuadDim's `quad`
++// member and every `->quad` reference to `quad_t`. Undefine it; nothing in SoH
++// uses the quad_t type.
++#ifdef quad
++#undef quad
++#endif
+ #ifndef Z_COLLISION_CHECK_H
+ #define Z_COLLISION_CHECK_H
+ 
+diff --git a/soh/soh/Enhancements/bootcommands.c b/soh/soh/Enhancements/bootcommands.c
+index 3cda26a8..baf3dc26 100644
+--- a/soh/soh/Enhancements/bootcommands.c
++++ b/soh/soh/Enhancements/bootcommands.c
+@@ -5,7 +5,6 @@
+ 
+ void BootCommands_Init() {
+     // Clears vars to prevent randomizer menu from being disabled
+-    CVarClear(CVAR_GENERAL("RandoGenerating")); // Clear when a crash happened during rando seed generation
+     CVarClear(CVAR_GENERAL("NewSeedGenerated"));
+     CVarClear(CVAR_GENERAL("OnFileSelectNameEntry")); // Clear when soh is killed on the file name entry page
+     CVarClear(CVAR_GENERAL("BetterDebugWarpScreenMQMode"));
+diff --git a/soh/soh/Enhancements/controls/Mapper.cpp b/soh/soh/Enhancements/controls/Mapper.cpp
+index 0621833f..e3243d9c 100644
+--- a/soh/soh/Enhancements/controls/Mapper.cpp
++++ b/soh/soh/Enhancements/controls/Mapper.cpp
+@@ -1,3 +1,6 @@
++// SoH-3DS: s32 rather than int32_t at boundaries with decomp types.
++// devkitARM makes int32_t `long int`, a distinct type from s32, so
++// references and template arguments will not bind across the two.
+ #include "Mapper.h"
+ 
+ #include <algorithm>
+@@ -990,7 +993,7 @@ void MapperWindow::PollDeviceForSession() {
+     SDL_JoystickUpdate();
+ 
+     const int32_t buttonCount = SDL_JoystickNumButtons(mJoystick);
+-    mPreviousButtons.resize((size_t)std::max(buttonCount, 0), 0);
++    mPreviousButtons.resize((size_t)std::max<int32_t>(buttonCount, 0), 0);
+     for (int32_t i = 0; i < buttonCount; i++) {
+         const uint8_t state = SDL_JoystickGetButton(mJoystick, i);
+         if (state != 0 && mPreviousButtons[i] == 0) {
+@@ -1000,7 +1003,7 @@ void MapperWindow::PollDeviceForSession() {
+     }
+ 
+     const int32_t hatCount = SDL_JoystickNumHats(mJoystick);
+-    mPreviousHats.resize((size_t)std::max(hatCount, 0), SDL_HAT_CENTERED);
++    mPreviousHats.resize((size_t)std::max<int32_t>(hatCount, 0), SDL_HAT_CENTERED);
+     for (int32_t i = 0; i < hatCount; i++) {
+         const uint8_t state = SDL_JoystickGetHat(mJoystick, i);
+         if (state != mPreviousHats[i] && state != SDL_HAT_CENTERED) {
+diff --git a/soh/soh/Enhancements/cosmetics/CosmeticsEditor.cpp b/soh/soh/Enhancements/cosmetics/CosmeticsEditor.cpp
+index 90095515..8e301ca2 100644
+--- a/soh/soh/Enhancements/cosmetics/CosmeticsEditor.cpp
++++ b/soh/soh/Enhancements/cosmetics/CosmeticsEditor.cpp
+@@ -2531,7 +2531,16 @@ void RegisterOnGameFrameUpdateHook() {
+     GameInteractor::Instance->RegisterGameHook<GameInteractor::OnGameFrameUpdate>([]() { CosmeticsUpdateTick(); });
+ }
+ 
++// SoH-3DS: InitElement tracing - see comment in SohGui.cpp.
++#ifdef __3DS__
++#include <cstdio>
++#define SOH3DS_CE_TRACE(msg) fprintf(stderr, "soh-3ds cosmetics: " msg "\n")
++#else
++#define SOH3DS_CE_TRACE(msg) ((void)0)
++#endif
++
+ void CosmeticsEditorWindow::InitElement() {
++    SOH3DS_CE_TRACE("InitElement entry");
+     // Convert the `current color` into the format that the ImGui color picker expects
+     for (auto& [id, cosmeticOption] : cosmeticOptions) {
+         Color_RGBA8 defaultColor = { cosmeticOption.defaultColor.r, cosmeticOption.defaultColor.g,
+@@ -2543,10 +2552,15 @@ void CosmeticsEditorWindow::InitElement() {
+         cosmeticOption.currentColor.z = cvarColor.b / 255.0f;
+         cosmeticOption.currentColor.w = cvarColor.a / 255.0f;
+     }
++    SOH3DS_CE_TRACE("colors done -> SaveCVars + Scan");
+     Ship::Context::GetRawInstance()->GetWindow()->GetGui()->SaveConsoleVariablesNextFrame();
+     ScanCustomCosmetics();
++    SOH3DS_CE_TRACE("Scan done -> ApplyOrResetCustomGfxPatches");
+     ApplyOrResetCustomGfxPatches();
++    SOH3DS_CE_TRACE("ApplyOrResetCustomGfxPatches done -> ApplyAuthenticGfxPatches");
+     ApplyAuthenticGfxPatches();
++    SOH3DS_CE_TRACE("ApplyAuthenticGfxPatches done");
++    SOH3DS_CE_TRACE("authentic done -> ApplyCustomCosmetics");
+     ApplyCustomCosmetics();
+ }
+ 
+diff --git a/soh/soh/Enhancements/cosmetics/authenticGfxPatches.cpp b/soh/soh/Enhancements/cosmetics/authenticGfxPatches.cpp
+index 92f38fef..fca9583b 100644
+--- a/soh/soh/Enhancements/cosmetics/authenticGfxPatches.cpp
++++ b/soh/soh/Enhancements/cosmetics/authenticGfxPatches.cpp
+@@ -12,6 +12,22 @@ extern "C" {
+ #include "objects/object_gi_soldout/object_gi_soldout.h"
+ #include "objects/object_ik/object_ik.h"
+ #include "objects/object_link_child/object_link_child.h"
++
++// SoH-3DS: these are the first functions to load and mutate real OoT resources
++// (display lists out of oot.o2r), so trace each one - a stall here is a resource
++// path problem, not a cosmetics problem.
++#ifdef __3DS__
++#include <cstdio>
++#include <malloc.h>
++#define SOH3DS_GFX_TRACE(msg)                                                                                          \
++    do {                                                                                                              \
++        struct mallinfo mi = mallinfo();                                                                               \
++        fprintf(stderr, "soh-3ds gfxpatch: " msg " used=%uKiB free=%uKiB\n", (unsigned)(mi.uordblks / 1024),            \
++                (unsigned)(mi.fordblks / 1024));                                                                       \
++    } while (0)
++#else
++#define SOH3DS_GFX_TRACE(msg) ((void)0)
++#endif
+ }
+ 
+ typedef struct {
+@@ -294,13 +310,19 @@ void PatchBoulderFragment() {
+ }
+ 
+ void ApplyAuthenticGfxPatches() {
++    SOH3DS_GFX_TRACE("entry");
+     // Overflow textures
+     PatchArrowTipTexture();
++    SOH3DS_GFX_TRACE("ArrowTip done");
+     PatchDekuStickTextureOverflow();
++    SOH3DS_GFX_TRACE("DekuStick done");
+     PatchFreezardTextureOverflow();
++    SOH3DS_GFX_TRACE("Freezard done");
+     PatchIronKnuckleTextureOverflow();
++    SOH3DS_GFX_TRACE("IronKnuckle done");
+ 
+     PatchBoulderFragment();
++    SOH3DS_GFX_TRACE("BoulderFragment done");
+ }
+ 
+ // Patches the Sold Out GI DL to render the texture in the mirror boundary
+diff --git a/soh/soh/Enhancements/debugger/debugSaveEditor.cpp b/soh/soh/Enhancements/debugger/debugSaveEditor.cpp
+index 4e874976..4ffbe5f0 100644
+--- a/soh/soh/Enhancements/debugger/debugSaveEditor.cpp
++++ b/soh/soh/Enhancements/debugger/debugSaveEditor.cpp
+@@ -1,3 +1,6 @@
++// SoH-3DS: s32 rather than int32_t at boundaries with decomp types.
++// devkitARM makes int32_t `long int`, a distinct type from s32, so
++// references and template arguments will not bind across the two.
+ #include <algorithm>
+ #include <array>
+ #include <bit>
+@@ -1369,7 +1372,7 @@ void DrawFlagArrayWithTooltips(const std::string& name, T& flags, Colors color,
+ }
+ 
+ // Draw a flag bitfield as a grid of checkboxes
+-void DrawFlagTableArray16(const FlagTable& flagTable, uint16_t row, uint16_t& flags) {
++void DrawFlagTableArray16(const FlagTable& flagTable, u16 row, u16& flags) {
+     ImGui::PushID((std::to_string(row) + flagTable.name).c_str());
+     for (int32_t flagIndex = 15; flagIndex >= 0; flagIndex--) {
+         ImGui::SameLine();
+@@ -1412,7 +1415,7 @@ void DrawFlagTableArray16(const FlagTable& flagTable, uint16_t row, uint16_t& fl
+ }
+ 
+ // Helper to draw "Set All / Clear All" button pair with flag array
+-void DrawFlagButtons(const char* name, uint32_t& flags, UIWidgets::Colors color) {
++void DrawFlagButtons(const char* name, u32& flags, UIWidgets::Colors color) {
+     if (UIWidgets::Button(spdlog::fmt_lib::format("Set All##{}", name).c_str(),
+                           UIWidgets::ButtonOptions().Size(ImVec2(0, 0)).Color(Colors::Green))) {
+         flags = UINT32_MAX;
+@@ -1444,7 +1447,7 @@ void DrawActiveStates(const std::string& label, uint32_t states, const std::vect
+     ImGui::PopStyleColor();
+ }
+ 
+-static uint16_t& GetFlagTableEntry(const FlagTable& flagTable, size_t row) {
++static u16& GetFlagTableEntry(const FlagTable& flagTable, size_t row) {
+     switch (flagTable.flagTableType) {
+         case EVENT_CHECK_INF:
+             return gSaveContext.eventChkInf[row];
+@@ -1466,7 +1469,7 @@ static void DrawFlagTableSearchResults(const FlagTable& flagTable, ImGuiTextFilt
+     bool hasMatches = false;
+ 
+     for (size_t row = 0; row < flagTable.size + 1; row++) {
+-        uint16_t& flags = GetFlagTableEntry(flagTable, row);
++        u16& flags = GetFlagTableEntry(flagTable, row);
+ 
+         for (int32_t flagIndex = 15; flagIndex >= 0; flagIndex--) {
+             uint16_t index = static_cast<uint16_t>(row * 16 + flagIndex);
+diff --git a/soh/soh/Enhancements/game-interactor/GameInteractor_Hooks.cpp b/soh/soh/Enhancements/game-interactor/GameInteractor_Hooks.cpp
+index 3b5d1f74..2b6e5e61 100644
+--- a/soh/soh/Enhancements/game-interactor/GameInteractor_Hooks.cpp
++++ b/soh/soh/Enhancements/game-interactor/GameInteractor_Hooks.cpp
+@@ -255,7 +255,11 @@ void GameInteractor_ExecuteOnPlayDrawEnd() {
+     GameInteractor::Instance->ExecuteHooks<GameInteractor::OnPlayDrawEnd>();
+ }
+ 
+-bool GameInteractor_Should(GIVanillaBehavior flag, u32 result, ...) {
++// SoH-3DS: uint32_t, matching GameInteractor_Hooks.h. devkitARM makes
++// uint32_t `unsigned long int` while u32 is `unsigned int`, so the two
++// spellings mangle to different C++ symbols and every call site here goes
++// unresolved at link time.
++bool GameInteractor_Should(GIVanillaBehavior flag, uint32_t result, ...) {
+     // Only the external function can use the Variadic Function syntax
+     // To pass the va args to the next caller must be done using va_list and reading the args into it
+     // Because there can be N subscribers registered to each template call, the subscribers will be responsible for
+diff --git a/soh/soh/Enhancements/randomizer/3drando/hint_list.cpp b/soh/soh/Enhancements/randomizer/3drando/hint_list.cpp
+index f7c9b351..c22d43d6 100644
+--- a/soh/soh/Enhancements/randomizer/3drando/hint_list.cpp
++++ b/soh/soh/Enhancements/randomizer/3drando/hint_list.cpp
+@@ -19,7 +19,30 @@ using namespace std::literals::string_literals;
+ 
+ namespace Rando {
+ 
++// SoH-3DS: hint-table build instrumentation.
++//
++// This builds several thousand HintText objects, each holding CustomMessages
++// with three language std::strings. On 3DS the run reached "HintTable_Init
++// start" and then produced nothing for four minutes, so the question is whether
++// it is slow or has exhausted the heap. mallinfo answers that directly without
++// needing <3ds.h>, whose s32/u32 typedefs clash with libultra's here.
++#ifdef __3DS__
++#include <malloc.h>
++#include <cstdio>
++extern "C" unsigned long long svcGetSystemTick(void);
++#define SOH3DS_HINT_TRACE(msg)                                                                                         \
++    do {                                                                                                               \
++        struct mallinfo mi = mallinfo();                                                                                \
++        fprintf(stderr, "soh-3ds hints: " msg " @%llums used=%uKiB free=%uKiB\n",                                       \
++                (unsigned long long)(svcGetSystemTick() / 268111ULL), (unsigned)(mi.uordblks / 1024),                  \
++                (unsigned)(mi.fordblks / 1024));                                                                        \
++    } while (0)
++#else
++#define SOH3DS_HINT_TRACE(msg) ((void)0)
++#endif
++
+ void StaticData::HintTable_Init() {
++    SOH3DS_HINT_TRACE("entry");
+     // clang-format off
+     /*--------------------------
+     |       GENERAL TEXT        |
+@@ -47,9 +70,13 @@ void StaticData::HintTable_Init() {
+                  // /*spanish*/ "Según dicen, #[[2]]# acapara #[[1]]#."
+     // clang-format on
+ 
++    SOH3DS_HINT_TRACE("base table done");
+     HintTable_Init_Item();
++    SOH3DS_HINT_TRACE("Item done");
+     HintTable_Init_Exclude_Overworld();
++    SOH3DS_HINT_TRACE("Exclude_Overworld done");
+     HintTable_Init_Exclude_Dungeon();
++    SOH3DS_HINT_TRACE("Exclude_Dungeon done");
+ 
+     // clang-format off
+     /*--------------------------
+diff --git a/soh/soh/Enhancements/randomizer/LakeHyliaWaterControl.cpp b/soh/soh/Enhancements/randomizer/LakeHyliaWaterControl.cpp
+index 6cd88aab..a7f82b9c 100644
+--- a/soh/soh/Enhancements/randomizer/LakeHyliaWaterControl.cpp
++++ b/soh/soh/Enhancements/randomizer/LakeHyliaWaterControl.cpp
+@@ -129,6 +129,22 @@ void RegisterLakeHyliaWaterControl() {
+         islandSwitch->interactFlags |= merged;
+     });
+ 
++    // SoH-3DS: the statics were cleared only on OnPlayDestroy; if a tracked
++    // actor died mid-scene the hooks above kept writing through freed
++    // ZeldaArena memory every frame (the RemoteBombchu/PR#7108 pattern).
++    COND_HOOK(OnActorDestroy, IS_RANDO, [](void* actorRef) {
++        Actor* actor = static_cast<Actor*>(actorRef);
++        if (actor == sSwitchMain) {
++            sSwitchMain = nullptr;
++        }
++        if (actor == sSwitchIsland) {
++            sSwitchIsland = nullptr;
++        }
++        if (actor == sLock) {
++            sLock = nullptr;
++        }
++    });
++
+     COND_HOOK(OnPlayDestroy, IS_RANDO, []() {
+         sSwitchMain = nullptr;
+         sSwitchIsland = nullptr;
+diff --git a/soh/soh/Enhancements/randomizer/SeedContext.cpp b/soh/soh/Enhancements/randomizer/SeedContext.cpp
+index e1db1c49..45cc95d8 100644
+--- a/soh/soh/Enhancements/randomizer/SeedContext.cpp
++++ b/soh/soh/Enhancements/randomizer/SeedContext.cpp
+@@ -1,3 +1,4 @@
++#include <cstdio>
+ #include "SeedContext.h"
+ #include "static_data.h"
+ #include "soh/OTRGlobals.h"
+@@ -53,13 +54,32 @@ int Context::CountEmptyLocations(const bool countShops) {
+     }));
+ }
+ 
++// SoH-3DS: InitStaticData builds several thousand std::string/std::map entries.
++// On a 268/804 MHz ARM11 that is slow enough to look like a hang, so each stage
++// is reported with a timestamp to tell "slow" from "stuck".
++//
++// svcGetSystemTick is declared here rather than including <3ds.h>: libctru
++// typedefs s32/u32 as long int, which conflicts with libultra's int spellings in
++// this translation unit.
++#ifdef __3DS__
++extern "C" unsigned long long svcGetSystemTick(void);
++#define SOH3DS_SD_TRACE(msg)                                                                                           \
++    fprintf(stderr, "soh-3ds staticdata: " msg " @%llu ms\n", (unsigned long long)(svcGetSystemTick() / 268111ULL))
++#else
++#define SOH3DS_SD_TRACE(msg) ((void)0)
++#endif
++
+ void Context::InitStaticData() {
++    SOH3DS_SD_TRACE("HintTable_Init start");
+     StaticData::HintTable_Init();
++    SOH3DS_SD_TRACE("HintTable_Init done");
+     StaticData::trialNameToEnum = StaticData::PopulateTranslationMap(StaticData::trialData);
+     StaticData::hintNameToEnum = StaticData::PopulateTranslationMap(StaticData::hintNames);
+     StaticData::hintTypeNameToEnum = StaticData::PopulateTranslationMap(StaticData::hintTypeNames);
+     StaticData::areaNameToEnum = StaticData::PopulateTranslationMap(StaticData::areaNames);
++    SOH3DS_SD_TRACE("translation maps done");
+     StaticData::InitLocationTable();
++    SOH3DS_SD_TRACE("InitLocationTable done");
+ }
+ 
+ std::shared_ptr<Context> Context::CreateInstance() {
+diff --git a/soh/soh/Enhancements/randomizer/randomizer.cpp b/soh/soh/Enhancements/randomizer/randomizer.cpp
+index 45041816..5b2b2b72 100644
+--- a/soh/soh/Enhancements/randomizer/randomizer.cpp
++++ b/soh/soh/Enhancements/randomizer/randomizer.cpp
+@@ -1,7 +1,12 @@
++#include <atomic>
+ #include <fstream>
+ #include <sstream>
+ #include <tuple>
+ 
++#ifdef __3DS__
++#include <malloc.h>
++#endif
++
+ #include <nlohmann/json.hpp>
+ #include <ship/window/FileDropMgr.h>
+ 
+@@ -43,7 +48,7 @@ std::unordered_map<std::string, HintType> SpoilerfileHintTypeNameToEnum;
+ std::set<RandomizerCheck> excludedLocations;
+ std::set<RandomizerCheck> spoilerExcludedLocations;
+ 
+-bool generated;
++static std::atomic<bool> randoGenerating;
+ 
+ bool Rando_HandleSpoilerDrop(char* filePath) {
+     if (SohUtils::IsStringEmpty(filePath)) {
+@@ -926,9 +931,16 @@ RandomizerCheck Randomizer::GetCheckFromRandomizerInf(RandomizerInf randomizerIn
+ std::thread randoThread;
+ 
+ void GenerateRandomizerImgui(std::string seed = "") {
+-    CVarSetInteger(CVAR_GENERAL("RandoGenerating"), 1);
+-    Ship::Context::GetRawInstance()->GetWindow()->GetGui()->SaveConsoleVariablesNextFrame();
+     auto ctx = Rando::Context::GetInstance();
++#ifdef __3DS__
++    // SoH-3DS: generation runs against a 66 MB heap ceiling. A bad_alloc (or a
++    // stoi on a corrupt cvar) escaping this thread is std::terminate; contain
++    // it so a failed generation degrades to "not generated" and the player can
++    // retry with lighter settings instead of crashing the console.
++    struct mallinfo miBefore = mallinfo();
++    fprintf(stderr, "rando: gen start, heap used=%u KiB\n", (unsigned)(miBefore.uordblks / 1024));
++    try {
++#endif
+     // RANDOTODO proper UI for selecting if a spoiler loaded should be used for settings
+     Rando::Settings::GetInstance()->SetAllToContext();
+ 
+@@ -963,32 +975,59 @@ void GenerateRandomizerImgui(std::string seed = "") {
+     }
+ 
+     Rando::Context::GetInstance()->SetSeedGenerated(GenerateRandomizer(excludedLocations, enabledTricks, seed));
+-    CVarSetInteger(CVAR_GENERAL("RandoGenerating"), 0);
+     Ship::Context::GetRawInstance()->GetWindow()->GetGui()->SaveConsoleVariablesNextFrame();
+ 
+-    generated = true;
+-
+     GameInteractor::Instance->ExecuteHooks<GameInteractor::OnGenerationCompletion>();
++
++    randoGenerating = false;
++#ifdef __3DS__
++    struct mallinfo miAfter = mallinfo();
++    fprintf(stderr, "rando: gen done ok=%d, heap used=%u KiB (start %u KiB)\n", ctx->IsSeedGenerated() ? 1 : 0,
++            (unsigned)(miAfter.uordblks / 1024), (unsigned)(miBefore.uordblks / 1024));
++#endif
++#ifdef __3DS__
++    } catch (const std::exception& e) {
++        fprintf(stderr, "rando: generation failed: %s\n", e.what());
++        ctx->SetSeedGenerated(false);
++        randoGenerating = false;
++    }
++#endif
++}
++
++bool IsRandoGenerating() {
++    return randoGenerating;
+ }
+ 
+ bool GenerateRandomizer(std::string seed /*= ""*/) {
+-    if (generated) {
+-        generated = false;
+-        randoThread.join();
++    if (randoGenerating) {
++        return false;
+     }
+-    if (CVarGetInteger(CVAR_GENERAL("RandoGenerating"), 0) == 0) {
+-        randoThread = std::thread(&GenerateRandomizerImgui, seed);
+-        return true;
++    WaitForRandoGeneration();
++    randoGenerating = true;
++    randoThread = std::thread(&GenerateRandomizerImgui, seed);
++    return true;
++}
++
++#ifdef __3DS__
++// SoH-3DS: boot-time generation smoke test, driveable in Azahar without input
++// injection. Gated on a cvar so retail boots never run it; called from main.c
++// after BootCommands_Init (InitOTR state is complete there).
++extern "C" void Soh3dsRandoGenBootTest(void) {
++    if (!CVarGetInteger("gRandoGenTest", 0)) {
++        return;
+     }
+-    return false;
++    fprintf(stderr, "rando: boot-test generation requested\n");
++    GenerateRandomizer("3DSTEST");
++    WaitForRandoGeneration();
++    fprintf(stderr, "rando: boot-test generation finished\n");
+ }
++#endif
+ 
+ static bool locationsTabOpen = false;
+ static bool tricksTabOpen = false;
+ 
+-void JoinRandoGenerationThread() {
+-    if (generated) {
+-        generated = false;
++void WaitForRandoGeneration() {
++    if (randoThread.joinable()) {
+         randoThread.join();
+     }
+ }
+diff --git a/soh/soh/Enhancements/randomizer/randomizer.h b/soh/soh/Enhancements/randomizer/randomizer.h
+index 5bab24c6..405fa1cf 100644
+--- a/soh/soh/Enhancements/randomizer/randomizer.h
++++ b/soh/soh/Enhancements/randomizer/randomizer.h
+@@ -44,7 +44,8 @@ extern "C" {
+ #endif
+ 
+ bool GenerateRandomizer(std::string seed = "");
+-void JoinRandoGenerationThread();
++bool IsRandoGenerating();
++void WaitForRandoGeneration();
+ 
+ #ifdef __cplusplus
+ }
+diff --git a/soh/soh/Enhancements/randomizer/randomizer_check_tracker.cpp b/soh/soh/Enhancements/randomizer/randomizer_check_tracker.cpp
+index e3ca0930..be1a64b2 100644
+--- a/soh/soh/Enhancements/randomizer/randomizer_check_tracker.cpp
++++ b/soh/soh/Enhancements/randomizer/randomizer_check_tracker.cpp
+@@ -1,3 +1,6 @@
++// SoH-3DS: s32 rather than int32_t at boundaries with decomp types.
++// devkitARM makes int32_t `long int`, a distinct type from s32, so
++// references and template arguments will not bind across the two.
+ #include <array>
+ #include <string>
+ #include <sstream>
+@@ -1198,7 +1201,7 @@ void LoadFile() {
+             OTRGlobals::Instance->gRandoContext->GetItemLocation(rc)->SetIsSkipped(skipped);
+         });
+     });
+-    SaveManager::Instance->LoadData("areasSpoiled", areasSpoiled, (uint32_t)0);
++    SaveManager::Instance->LoadData("areasSpoiled", areasSpoiled, (u32)0);
+     UpdateAllOrdering();
+     UpdateAllAreas();
+ }
+diff --git a/soh/soh/Enhancements/randomizer/randomizer_entrance.c b/soh/soh/Enhancements/randomizer/randomizer_entrance.c
+index 604ae765..d670dff6 100644
+--- a/soh/soh/Enhancements/randomizer/randomizer_entrance.c
++++ b/soh/soh/Enhancements/randomizer/randomizer_entrance.c
+@@ -1,3 +1,7 @@
++// SoH-3DS: these three definitions spell their types as randomizer_entrance.h
++// declares them. That header includes only <stdint.h> and is consumed from C++
++// too, so stdint is correct there - and on devkitARM int32_t is `long int`, a
++// different type from s32, so the two spellings are different functions.
+ /*
+  * Much of the code here was borrowed from https://github.com/gamestabled/OoT3D_Randomizer/blob/main/code/src/entrance.c
+  * It's been adapted for SoH to use our gPlayState vs their gGlobalContext with slightly different named properties, and
+@@ -303,7 +307,7 @@ s16 Entrance_OverrideDynamicExit(s16 dynamicExitIndex) {
+     return Grotto_OverrideSpecialEntrance(Entrance_GetOverride(dynamicExitList[dynamicExitIndex]));
+ }
+ 
+-u32 Entrance_SceneAndSpawnAre(u8 scene, u8 spawn) {
++uint32_t Entrance_SceneAndSpawnAre(uint8_t scene, uint8_t spawn) {
+     s16 entranceIndex;
+ 
+     // Adjust the entrance to account for the exact scene/spawn combination for child/adult and day/night
+@@ -664,7 +668,7 @@ void Entrance_OverrideGerudoGuardCapture(void) {
+     }
+ }
+ 
+-void Entrance_OverrideSpawnScene(s32 sceneNum, s32 spawn) {
++void Entrance_OverrideSpawnScene(int32_t sceneNum, int32_t spawn) {
+     // Copy the actorEntry properties to avoid modifying the original cached pointer
+     // Then assign a pointer of our modified actoreEntry back
+     modifiedLinkActorEntry.id = gPlayState->linkActorEntry->id;
+@@ -716,7 +720,7 @@ void Entrance_OverrideSpawnScene(s32 sceneNum, s32 spawn) {
+     }
+ }
+ 
+-s32 Entrance_OverrideSpawnSceneRoom(s32 sceneNum, s32 spawn, s32 roomNum) {
++int32_t Entrance_OverrideSpawnSceneRoom(int32_t sceneNum, int32_t spawn, int32_t roomNum) {
+     if (Randomizer_GetSettingValue(RSK_SHUFFLE_BOSS_ENTRANCES) != RO_BOSS_ROOM_ENTRANCE_SHUFFLE_OFF) {
+         // Repair the authentically bugged scene/spawn info for leaving Barinade's boss room -> Jabu Jabu's belly
+         // to load the correct room outside Barniade's boss room
+diff --git a/soh/soh/OTRAudio.h b/soh/soh/OTRAudio.h
+index eaa0d1ed..d5f8b92b 100644
+--- a/soh/soh/OTRAudio.h
++++ b/soh/soh/OTRAudio.h
+@@ -1,11 +1,17 @@
+ #pragma once
+ #include <thread>
+ #include <condition_variable>
++#include <atomic>
+ 
+-static struct {
++// SoH-3DS: this struct was `static`, giving every including translation unit
++// its own PRIVATE copy - savestates.cpp locked a phantom mutex (not the audio
++// thread's) and then rewrote the audio heap under the live core-2 synthesis
++// thread. One shared definition lives in OTRGlobals.cpp.
++struct OTRAudioSync {
+     std::thread thread;
+     std::condition_variable cv_to_thread;
+     std::mutex mutex;
+     std::atomic_bool running;
+     std::atomic_bool processing;
+-} audio;
++};
++extern OTRAudioSync audio;
+diff --git a/soh/soh/OTRGlobals.cpp b/soh/soh/OTRGlobals.cpp
+index ef7f5d49..6f568fcb 100644
+--- a/soh/soh/OTRGlobals.cpp
++++ b/soh/soh/OTRGlobals.cpp
+@@ -1,5 +1,11 @@
+ ﻿#include "OTRGlobals.h"
++#ifdef __3DS__
++#include <malloc.h>
++#endif
+ #include "OTRAudio.h"
++
++// Single definition of the audio-thread sync block (see OTRAudio.h).
++OTRAudioSync audio;
+ #include <algorithm>
+ #include <atomic>
+ #include <filesystem>
+@@ -114,6 +120,26 @@
+ #include "soh/config/ConfigUpdaters.h"
+ #include "soh/ShipInit.hpp"
+ 
++// SoH-3DS: InitOTR breadcrumbs. A fault here happens before any renderer or
++// spdlog sink exists, so stderr (routed to svcOutputDebugString) is the only
++// channel. Cheap enough to leave in.
++#ifdef __3DS__
++// SoH-3DS: breadcrumbs go to stderr (svcOutputDebugString, visible in the
++// emulator log) and, once the renderer is up, to the bottom-screen boot
++// console - so a minutes-long o2r index on hardware reads as progress, not a
++// hang. Implemented by the port main.
++// Weak: probe/test binaries that link these objects without the port main
++// (which defines the symbol) must stay linkable; the trace then no-ops.
++extern "C" void Soh3dsBootStatus(const char* msg) __attribute__((weak));
++#define SOH3DS_INIT_TRACE(msg) (Soh3dsBootStatus != nullptr ? Soh3dsBootStatus(msg) : (void)0)
++#else
++#define SOH3DS_INIT_TRACE(msg) ((void)0)
++#endif
++
++// SoH-3DS: quit paths call DeinitOTR before exit(0); the header only declares
++// it for C translation units.
++extern "C" void DeinitOTR(void);
++
+ #ifdef _MSC_VER
+ #define strdup _strdup
+ #endif
+@@ -281,7 +307,9 @@ OTRGlobals::OTRGlobals() {
+                              portArchiveVersion.minor == gBuildVersionMinor &&
+                              portArchiveVersion.patch == gBuildVersionPatch;
+ 
++    SOH3DS_INIT_TRACE("Initialize: InitConfiguration");
+     context->InitConfiguration();
++    SOH3DS_INIT_TRACE("Initialize: InitConsoleVariables");
+     context->InitConsoleVariables();
+ 
+     auto controlDeck = std::make_shared<LUS::ControlDeck>(std::vector<CONTROLLERBUTTONS_T>({
+@@ -304,7 +332,9 @@ OTRGlobals::OTRGlobals() {
+         std::make_shared<SohInputEditorWindow>(CVAR_WINDOW("ControllerConfiguration"), "Configure Controller");
+     sohFast3dWindow =
+         std::make_shared<Fast::Fast3dWindow>(std::vector<std::shared_ptr<Ship::GuiWindow>>({ sohInputEditorWindow }));
++    SOH3DS_INIT_TRACE("ctor: InitWindow start");
+     context->InitWindow(sohFast3dWindow);
++    SOH3DS_INIT_TRACE("ctor: InitWindow done");
+ 
+     SohGui::SetupMenu();
+ 
+@@ -315,6 +345,7 @@ OTRGlobals::OTRGlobals() {
+         overlay->LoadFont("Fipps", 32.0f, "fonts/Fipps-Regular.otf");
+         overlay->SetCurrentFont(CVarGetString(CVAR_GAME_OVERLAY_FONT, "Press Start 2P"));
+ 
++        SOH3DS_INIT_TRACE("fonts: start");
+         fontMonoSmall = CreateFontWithSize(14.0f, "fonts/Inconsolata-Regular.ttf");
+         fontMono = CreateFontWithSize(16.0f, "fonts/Inconsolata-Regular.ttf");
+         fontMonoLarger = CreateFontWithSize(20.0f, "fonts/Inconsolata-Regular.ttf");
+@@ -322,13 +353,24 @@ OTRGlobals::OTRGlobals() {
+         fontStandard = CreateFontWithSize(16.0f, "fonts/Montserrat-Regular.ttf");
+         fontStandardLarger = CreateFontWithSize(20.0f, "fonts/Montserrat-Regular.ttf");
+         fontStandardLargest = CreateFontWithSize(24.0f, "fonts/Montserrat-Regular.ttf");
++#ifdef __3DS__
++        // SoH-3DS: NotoSansJP-Regular.ttf is 5.45 MB and is only loaded to get
++        // the CJK ranges, which the block above already drops - so it would cost
++        // 5.45 MB of a 36 MB heap to render Latin text a Latin font already
++        // covers. Alias the pointer instead; every fontJapanese user stays valid.
++        fontJapanese = fontStandard;
++#else
+         fontJapanese = CreateFontWithSize(24.0f, "fonts/NotoSansJP-Regular.ttf", true);
++#endif
++        SOH3DS_INIT_TRACE("fonts: done");
+         ImGui::GetIO().FontDefault = fontStandardLarger;
+     }
+ 
+     previousImGuiScaleIndex = -1;
+     previousImGuiScale = defaultImGuiScale;
++    SOH3DS_INIT_TRACE("ctor: ScaleImGui start");
+     ScaleImGui();
++    SOH3DS_INIT_TRACE("ctor: OTRGlobals ctor done");
+ }
+ 
+ typedef enum ExtractSteps {
+@@ -406,6 +448,24 @@ static bool RemoveArchiveAcrossAppDirs(const std::string& fileName) {
+ }
+ 
+ void OTRGlobals::RunExtract(int argc, char* argv[]) {
++#ifdef __3DS__
++    // SoH-3DS: assets are extracted on a PC (scripts + soh-torch); on-device
++    // extraction is not built, so there is nothing for this routine to do.
++    //
++    // Returning early is not merely an optimisation. Two things here do not work
++    // on 3DS: std::filesystem::absolute() mangles the drive prefix, turning
++    // "sdmc:/..." into "/sdmc:/...", so DetectOTRVersion never finds the
++    // archive; and the fallback is an interactive ROM picker drawn with ImGui,
++    // which currently renders nothing. Together those produce a silent hang at
++    // startup with no output at all.
++    //
++    // The archive's presence is checked by the resource manager immediately
++    // after this, which fails loudly if it is missing.
++    (void)argc;
++    (void)argv;
++    fprintf(stderr, "soh-3ds: skipping on-device extraction; expecting a prepared oot.o2r\n");
++    return;
++#endif
+     bool extractDone = false;
+     ExtractSteps extractStep = ES_PORT_ARCHIVE;
+     WindowsSteps windowsStep = WS_TEMP;
+@@ -727,6 +787,11 @@ void OTRGlobals::RunExtract(int argc, char* argv[]) {
+ 
+     render:
+         if (!WindowIsRunning()) {
++            // SoH-3DS: see graph.c RunFrame - exit(0) without DeinitOTR tears
++            // down NDSP under a live audio thread in static destructors.
++            // (Declared at file scope below the includes: OTRGlobals.h only
++            // exposes DeinitOTR to C translation units.)
++            DeinitOTR();
+             exit(0);
+         }
+         // Process window events for resize, mouse, keyboard events
+@@ -807,13 +872,25 @@ void InitGfxDebugger() {
+ }
+ 
+ void OTRGlobals::Initialize() {
++    SOH3DS_INIT_TRACE("Initialize: locate oot-mq.o2r");
+     std::string mqPath = Ship::Context::LocateFileAcrossAppDirs("oot-mq.o2r", appShortName);
+     if (std::filesystem::exists(mqPath)) {
+         context->GetResourceManager()->GetArchiveManager()->AddArchive(mqPath);
+     }
++    SOH3DS_INIT_TRACE("Initialize: locate oot.o2r");
+     std::string ootPath = Ship::Context::LocateFileAcrossAppDirs("oot.o2r", appShortName);
++#ifdef __3DS__
++    // std::filesystem mangles 3DS drive prefixes ("sdmc:/x" -> "/sdmc:/x"), so
++    // log what actually got resolved before trusting exists().
++    fprintf(stderr, "soh-3ds init: oot.o2r resolved to \"%s\" exists=%d\n", ootPath.c_str(),
++            (int)std::filesystem::exists(ootPath));
++#endif
+     if (std::filesystem::exists(ootPath)) {
++        SOH3DS_INIT_TRACE("Initialize: AddArchive(oot.o2r) start");
+         context->GetResourceManager()->GetArchiveManager()->AddArchive(ootPath);
++        SOH3DS_INIT_TRACE("Initialize: AddArchive(oot.o2r) done");
++    } else {
++        SOH3DS_INIT_TRACE("Initialize: oot.o2r NOT FOUND -- no assets will load");
+     }
+ 
+     std::unordered_set<uint32_t> ValidHashes = {
+@@ -827,120 +904,171 @@ void OTRGlobals::Initialize() {
+ #else
+     auto defaultLogLevel = spdlog::level::info;
+ #endif
++    SOH3DS_INIT_TRACE("Initialize: InitConfiguration");
+     context->InitConfiguration();
++    SOH3DS_INIT_TRACE("Initialize: InitConsoleVariables");
+     context->InitConsoleVariables();
+     auto logLevel =
+         static_cast<spdlog::level::level_enum>(CVarGetInteger(CVAR_DEVELOPER_TOOLS("LogLevel"), defaultLogLevel));
++    SOH3DS_INIT_TRACE("Initialize: InitLogging");
+     context->InitLogging(logLevel, logLevel);
+     Ship::Context::GetRawInstance()->GetLogger()->set_pattern("[%H:%M:%S.%e] [%s:%#] [%^%l%$] %v");
+ 
++    SOH3DS_INIT_TRACE("Initialize: InitGfxDebugger");
+     InitGfxDebugger();
++    SOH3DS_INIT_TRACE("Initialize: InitFileDropMgr");
+     context->InitFileDropMgr();
+ 
+     // tell LUS to reserve 3 SoH specific threads (Game, Audio, Save)
+     prevAltAssets = CVarGetInteger(CVAR_SETTING("AltAssets"), 1);
++    SOH3DS_INIT_TRACE("Initialize: SetAltAssetsEnabled");
+     context->GetResourceManager()->SetAltAssetsEnabled(prevAltAssets);
+ 
++    SOH3DS_INIT_TRACE("Initialize: InitCrashHandler");
+     context->InitCrashHandler();
+ 
++    SOH3DS_INIT_TRACE("Initialize: GetWindow()->SetAutoCaptureMouse");
+     context->GetWindow()->SetAutoCaptureMouse(CVarGetInteger(CVAR_SETTING("EnableMouse"), 0) &&
+                                               CVarGetInteger(CVAR_SETTING("AutoCaptureMouse"), 1));
+     context->GetWindow()->SetForceCursorVisibility(CVarGetInteger(CVAR_SETTING("CursorVisibility"), 0));
+ 
++    SOH3DS_INIT_TRACE("Initialize: InitAudio");
+     context->InitAudio({ .SampleRate = 32000,
+                          .SampleLength = 1024,
+-                         // 4096 frames at 32 kHz (~128 ms) gives enough reservoir for frame
+-                         // jitter and slow-frame spikes without perceptible audio latency.
+-                         .DesiredBuffered = 4096 });
++                         // 2048 frames at 32 kHz (~64 ms) matches mario-kart-64-3ds's
++                         // reservoir. The earlier 4096 masked synthesis starvation when
++                         // the audio thread shared core 0 with the game loop; with the
++                         // thread on its own core the deep buffer was pure latency.
++                         .DesiredBuffered = 2048 });
+ 
+     // The menu is set up before audio is initialized, so its list of available audio backends has to be
+     // populated here rather than in Menu::InitElement (where the window backends are handled).
++    SOH3DS_INIT_TRACE("Initialize: UpdateAudioBackendObjects");
+     SohGui::GetSohMenu()->UpdateAudioBackendObjects();
+ 
+     SPDLOG_INFO("Starting Ship of Harkinian version {} (Branch: {} | Commit: {})", (char*)gBuildVersion,
+                 (char*)gGitBranch, (char*)gGitCommitHash);
+ 
++    SOH3DS_INIT_TRACE("InitOTR: GetResourceLoader");
+     auto loader = context->GetResourceManager()->GetResourceLoader();
++    SOH3DS_INIT_TRACE("InitOTR: RegisterResourceFactory #1");
+     loader->RegisterResourceFactory(std::make_shared<Fast::ResourceFactoryBinaryTextureV0>(), RESOURCE_FORMAT_BINARY,
+                                     "Texture", static_cast<uint32_t>(Fast::ResourceType::Texture), 0);
++    SOH3DS_INIT_TRACE("InitOTR: RegisterResourceFactory #2");
+     loader->RegisterResourceFactory(std::make_shared<Fast::ResourceFactoryBinaryTextureV1>(), RESOURCE_FORMAT_BINARY,
+                                     "Texture", static_cast<uint32_t>(Fast::ResourceType::Texture), 1);
++    SOH3DS_INIT_TRACE("InitOTR: RegisterResourceFactory #3");
+     loader->RegisterResourceFactory(std::make_shared<Fast::ResourceFactoryBinaryVertexV0>(), RESOURCE_FORMAT_BINARY,
+                                     "Vertex", static_cast<uint32_t>(Fast::ResourceType::Vertex), 0);
++    SOH3DS_INIT_TRACE("InitOTR: RegisterResourceFactory #4");
+     loader->RegisterResourceFactory(std::make_shared<Fast::ResourceFactoryXMLVertexV0>(), RESOURCE_FORMAT_XML, "Vertex",
+                                     static_cast<uint32_t>(Fast::ResourceType::Vertex), 0);
++    SOH3DS_INIT_TRACE("InitOTR: RegisterResourceFactory #5");
+     loader->RegisterResourceFactory(std::make_shared<Fast::ResourceFactoryBinaryDisplayListV0>(),
+                                     RESOURCE_FORMAT_BINARY, "DisplayList",
+                                     static_cast<uint32_t>(Fast::ResourceType::DisplayList), 0);
++    SOH3DS_INIT_TRACE("InitOTR: RegisterResourceFactory #6");
+     loader->RegisterResourceFactory(std::make_shared<Fast::ResourceFactoryXMLDisplayListV0>(), RESOURCE_FORMAT_XML,
+                                     "DisplayList", static_cast<uint32_t>(Fast::ResourceType::DisplayList), 0);
++    SOH3DS_INIT_TRACE("InitOTR: RegisterResourceFactory #7");
+     loader->RegisterResourceFactory(std::make_shared<Fast::ResourceFactoryBinaryMatrixV0>(), RESOURCE_FORMAT_BINARY,
+                                     "Matrix", static_cast<uint32_t>(Fast::ResourceType::Matrix), 0);
++    SOH3DS_INIT_TRACE("InitOTR: RegisterResourceFactory #8");
+     loader->RegisterResourceFactory(std::make_shared<Ship::ResourceFactoryBinaryBlobV0>(), RESOURCE_FORMAT_BINARY,
+                                     "Blob", static_cast<uint32_t>(Ship::ResourceType::Blob), 0);
++    SOH3DS_INIT_TRACE("InitOTR: RegisterResourceFactory #9");
+     loader->RegisterResourceFactory(std::make_shared<SOH::ResourceFactoryBinaryArrayV0>(), RESOURCE_FORMAT_BINARY,
+                                     "Array", static_cast<uint32_t>(SOH::ResourceType::SOH_Array), 0);
++    SOH3DS_INIT_TRACE("InitOTR: RegisterResourceFactory #10");
+     loader->RegisterResourceFactory(std::make_shared<SOH::ResourceFactoryBinaryAnimationV0>(), RESOURCE_FORMAT_BINARY,
+                                     "Animation", static_cast<uint32_t>(SOH::ResourceType::SOH_Animation), 0);
++    SOH3DS_INIT_TRACE("InitOTR: RegisterResourceFactory #11");
+     loader->RegisterResourceFactory(std::make_shared<SOH::ResourceFactoryBinaryPlayerAnimationV0>(),
+                                     RESOURCE_FORMAT_BINARY, "PlayerAnimation",
+                                     static_cast<uint32_t>(SOH::ResourceType::SOH_PlayerAnimation), 0);
++    SOH3DS_INIT_TRACE("InitOTR: RegisterResourceFactory #12");
+     loader->RegisterResourceFactory(std::make_shared<SOH::ResourceFactoryBinarySceneV0>(), RESOURCE_FORMAT_BINARY,
+                                     "Room", static_cast<uint32_t>(SOH::ResourceType::SOH_Room),
+                                     0); // Is room scene? maybe?
++    SOH3DS_INIT_TRACE("InitOTR: RegisterResourceFactory #13");
+     loader->RegisterResourceFactory(std::make_shared<SOH::ResourceFactoryXMLSceneV0>(), RESOURCE_FORMAT_XML, "Room",
+                                     static_cast<uint32_t>(SOH::ResourceType::SOH_Room), 0); // Is room scene? maybe?
++    SOH3DS_INIT_TRACE("InitOTR: RegisterResourceFactory #14");
+     loader->RegisterResourceFactory(std::make_shared<SOH::ResourceFactoryBinaryCollisionHeaderV0>(),
+                                     RESOURCE_FORMAT_BINARY, "CollisionHeader",
+                                     static_cast<uint32_t>(SOH::ResourceType::SOH_CollisionHeader), 0);
++    SOH3DS_INIT_TRACE("InitOTR: RegisterResourceFactory #15");
+     loader->RegisterResourceFactory(std::make_shared<SOH::ResourceFactoryXMLCollisionHeaderV0>(), RESOURCE_FORMAT_XML,
+                                     "CollisionHeader", static_cast<uint32_t>(SOH::ResourceType::SOH_CollisionHeader),
+                                     0);
++    SOH3DS_INIT_TRACE("InitOTR: RegisterResourceFactory #16");
+     loader->RegisterResourceFactory(std::make_shared<SOH::ResourceFactoryBinarySkeletonV0>(), RESOURCE_FORMAT_BINARY,
+                                     "Skeleton", static_cast<uint32_t>(SOH::ResourceType::SOH_Skeleton), 0);
++    SOH3DS_INIT_TRACE("InitOTR: RegisterResourceFactory #17");
+     loader->RegisterResourceFactory(std::make_shared<SOH::ResourceFactoryXMLSkeletonV0>(), RESOURCE_FORMAT_XML,
+                                     "Skeleton", static_cast<uint32_t>(SOH::ResourceType::SOH_Skeleton), 0);
++    SOH3DS_INIT_TRACE("InitOTR: RegisterResourceFactory #18");
+     loader->RegisterResourceFactory(std::make_shared<SOH::ResourceFactoryBinarySkeletonLimbV0>(),
+                                     RESOURCE_FORMAT_BINARY, "SkeletonLimb",
+                                     static_cast<uint32_t>(SOH::ResourceType::SOH_SkeletonLimb), 0);
++    SOH3DS_INIT_TRACE("InitOTR: RegisterResourceFactory #19");
+     loader->RegisterResourceFactory(std::make_shared<SOH::ResourceFactoryXMLSkeletonLimbV0>(), RESOURCE_FORMAT_XML,
+                                     "SkeletonLimb", static_cast<uint32_t>(SOH::ResourceType::SOH_SkeletonLimb), 0);
++    SOH3DS_INIT_TRACE("InitOTR: RegisterResourceFactory #20");
+     loader->RegisterResourceFactory(std::make_shared<SOH::ResourceFactoryBinaryPathV0>(), RESOURCE_FORMAT_BINARY,
+                                     "Path", static_cast<uint32_t>(SOH::ResourceType::SOH_Path), 0);
++    SOH3DS_INIT_TRACE("InitOTR: RegisterResourceFactory #21");
+     loader->RegisterResourceFactory(std::make_shared<SOH::ResourceFactoryXMLPathV0>(), RESOURCE_FORMAT_XML, "Path",
+                                     static_cast<uint32_t>(SOH::ResourceType::SOH_Path), 0);
++    SOH3DS_INIT_TRACE("InitOTR: RegisterResourceFactory #22");
+     loader->RegisterResourceFactory(std::make_shared<SOH::ResourceFactoryBinaryCutsceneV0>(), RESOURCE_FORMAT_BINARY,
+                                     "Cutscene", static_cast<uint32_t>(SOH::ResourceType::SOH_Cutscene), 0);
++    SOH3DS_INIT_TRACE("InitOTR: RegisterResourceFactory #23");
+     loader->RegisterResourceFactory(std::make_shared<SOH::ResourceFactoryBinaryTextV0>(), RESOURCE_FORMAT_BINARY,
+                                     "Text", static_cast<uint32_t>(SOH::ResourceType::SOH_Text), 0);
++    SOH3DS_INIT_TRACE("InitOTR: RegisterResourceFactory #24");
+     loader->RegisterResourceFactory(std::make_shared<SOH::ResourceFactoryXMLTextV0>(), RESOURCE_FORMAT_XML, "Text",
+                                     static_cast<uint32_t>(SOH::ResourceType::SOH_Text), 0);
++    SOH3DS_INIT_TRACE("InitOTR: RegisterResourceFactory #25");
+     loader->RegisterResourceFactory(std::make_shared<SOH::ResourceFactoryBinaryAudioSampleV2>(), RESOURCE_FORMAT_BINARY,
+                                     "AudioSample", static_cast<uint32_t>(SOH::ResourceType::SOH_AudioSample), 2);
+ 
++    SOH3DS_INIT_TRACE("InitOTR: RegisterResourceFactory #26");
+     loader->RegisterResourceFactory(std::make_shared<SOH::ResourceFactoryXMLAudioSampleV0>(), RESOURCE_FORMAT_XML,
+                                     "Sample", static_cast<uint32_t>(SOH::ResourceType::SOH_AudioSample), 0);
++    SOH3DS_INIT_TRACE("InitOTR: RegisterResourceFactory #27");
+     loader->RegisterResourceFactory(std::make_shared<SOH::ResourceFactoryBinaryAudioSoundFontV2>(),
+                                     RESOURCE_FORMAT_BINARY, "AudioSoundFont",
+                                     static_cast<uint32_t>(SOH::ResourceType::SOH_AudioSoundFont), 2);
++    SOH3DS_INIT_TRACE("InitOTR: RegisterResourceFactory #28");
+     loader->RegisterResourceFactory(std::make_shared<SOH::ResourceFactoryXMLSoundFontV0>(), RESOURCE_FORMAT_XML,
+                                     "SoundFont", static_cast<uint32_t>(SOH::ResourceType::SOH_AudioSoundFont), 0);
++    SOH3DS_INIT_TRACE("InitOTR: RegisterResourceFactory #29");
+     loader->RegisterResourceFactory(std::make_shared<SOH::ResourceFactoryBinaryAudioSequenceV2>(),
+                                     RESOURCE_FORMAT_BINARY, "AudioSequence",
+                                     static_cast<uint32_t>(SOH::ResourceType::SOH_AudioSequence), 2);
++    SOH3DS_INIT_TRACE("InitOTR: RegisterResourceFactory #30");
+     loader->RegisterResourceFactory(std::make_shared<SOH::ResourceFactoryXMLAudioSequenceV0>(), RESOURCE_FORMAT_XML,
+                                     "Sequence", static_cast<uint32_t>(SOH::ResourceType::SOH_AudioSequence), 0);
++    SOH3DS_INIT_TRACE("InitOTR: RegisterResourceFactory #31");
+     loader->RegisterResourceFactory(std::make_shared<SOH::ResourceFactoryBinaryBackgroundV0>(), RESOURCE_FORMAT_BINARY,
+                                     "Background", static_cast<uint32_t>(SOH::ResourceType::SOH_Background), 0);
+ 
++    SOH3DS_INIT_TRACE("Init: Lang::LoadLangs");
+     Lang::LoadLangs();
+ 
++    SOH3DS_INIT_TRACE("Init: SaveStateMgr");
+     gSaveStateMgr = std::make_shared<SaveStateMgr>();
++    SOH3DS_INIT_TRACE("Init: gRandoContext->InitStaticData");
+     gRandoContext->InitStaticData();
++    SOH3DS_INIT_TRACE("Init: Rando::Context::CreateInstance");
+     gRandoContext = Rando::Context::CreateInstance();
++    SOH3DS_INIT_TRACE("Init: AssignContext");
+     Rando::Settings::GetInstance()->AssignContext(gRandoContext);
++    SOH3DS_INIT_TRACE("Init: InitItemTable");
+     Rando::StaticData::InitItemTable(); // RANDOTODO make this not rely on context's logic so it can be initialised in
+                                         // InitStaticData
++    SOH3DS_INIT_TRACE("Init: new Randomizer");
+     gRandomizer = std::make_shared<Randomizer>();
+ 
+     hasMasterQuest = hasOriginal = false;
+@@ -949,12 +1077,14 @@ void OTRGlobals::Initialize() {
+     // This is in OTRGlobals right now because this is a place that will only ever be run once at the beginning of
+     // startup. We should probably find some code in db_camera that does initialization and only run once, and then
+     // dealloc on deinitialization.
++    SOH3DS_INIT_TRACE("Init: cameraStrings");
+     cameraStrings = (char**)malloc(sizeof(constCameraStrings));
+     for (size_t i = 0; i < sizeof(constCameraStrings) / sizeof(char*); i++) {
+         // OTRTODO: never deallocated...
+         cameraStrings[i] = strdup(constCameraStrings[i]);
+     }
+ 
++    SOH3DS_INIT_TRACE("Init: GetGameVersions");
+     auto versions = context->GetResourceManager()->GetArchiveManager()->GetGameVersions();
+ 
+     for (uint32_t version : versions) {
+@@ -1000,6 +1130,18 @@ OTRGlobals::~OTRGlobals() {
+ }
+ 
+ void OTRGlobals::ScaleImGui() {
++    // SoH-3DS: ImGui::GetStyle() is GImGui->Style with no null check, so calling
++    // this before a context exists computes &((ImGuiContext*)0)->Style - 0xC74 -
++    // and ScaleAllSizes then faults reading 0xC7C.
++    //
++    // On desktop the context happens to exist by the time anything calls this.
++    // On 3DS it does not: something in the randomizer's static-data init reaches
++    // here while the window/Gui is still being built. Guarding at the call site
++    // rather than chasing the caller, because "scale the UI before the UI
++    // exists" is a no-op under any caller.
++    if (ImGui::GetCurrentContext() == nullptr) {
++        return;
++    }
+     int32_t imGuiScaleIndex = CVarGetInteger(CVAR_SETTING("ImGuiScale"), defaultImGuiScale);
+     if (imGuiScaleIndex == previousImGuiScaleIndex) {
+         return;
+@@ -1055,20 +1197,82 @@ void OTRAudio_Thread() {
+ 
+     // Single producer routine used by both wake-driven and pre-buffer loops.
+     // Picks per-iteration sample count itself, then produces and plays it.
++    //
++    // SoH-3DS (gated): produce ONE engine update (528/544 frames, ~16.5 ms)
++    // per call instead of AUDIO_FRAMES_PER_UPDATE bundled updates (~49.5 ms).
++    // With a 2048-frame reservoir, a 3-update batch means the producer guard
++    // only admits a refill once the queue is below 416 frames (13 ms) - and
++    // synthesizing the next 49.5 ms batch takes ~22 ms at stock 3DS speed, so
++    // the queue ran dry mid-synthesis on most refills (measured 65% gap rate;
++    // synthesis itself is only ~45% of real time). Single updates raise the
++    // refill floor to 47 ms with the same reservoir and latency. The
++    // sequencer's tempo debt is tracked per update, so musical time is
++    // unchanged; the pre-buffer loop below still tops the queue up fully.
++    // Desktop keeps the upstream bundled cadence.
++#ifdef __3DS__
++#define UPDATES_PER_BATCH 1
++#else
++#define UPDATES_PER_BATCH AUDIO_FRAMES_PER_UPDATE
++#endif
+     auto produce_next_batch = [&]() {
+         u32 num_audio_samples = sample_debt_thirds > 0 ? SAMPLES_MID : SAMPLES_LOW;
+-        sample_debt_thirds += (1600 - 3 * (int32_t)num_audio_samples) * AUDIO_FRAMES_PER_UPDATE;
++        sample_debt_thirds += (1600 - 3 * (int32_t)num_audio_samples) * UPDATES_PER_BATCH;
+ 
+-        const u32 total_frames = num_audio_samples * AUDIO_FRAMES_PER_UPDATE;
++        const u32 total_frames = num_audio_samples * UPDATES_PER_BATCH;
+         const u32 total_samples = total_frames * NUM_AUDIO_CHANNELS;
+ 
+         // 3 is the maximum authentic frame divisor.
+-        static thread_local s16 audio_buffer[SAMPLES_HIGH * NUM_AUDIO_CHANNELS * 3];
++        // SoH-3DS: was `static thread_local`. thread_local placed a 6.6 KiB
++        // copy in EVERY thread's TLS, which libctru lays out in the same
++        // guard-free heap block as the thread's stack, immediately above the
++        // stack top - hardware dumps 12/17 carry garbage sp values pointing
++        // into exactly that region of the audio thread's block. NOT proven as
++        // the corruption source (3DS writes at most 1088 of 3360 slots per
++        // call), but one thread owns this routine, so a plain static is
++        // correct anyway: .bss placement, far from every stack, and 6.6 KiB
++        // less TLS per thread. Doubles as an experiment - if the poisoned
++        // frame crashes move or stop, this neighborhood was implicated.
++        static s16 audio_buffer[SAMPLES_HIGH * NUM_AUDIO_CHANNELS * 3];
++        // Tripwire for the unproven half: nothing may size a batch beyond the
++        // buffer. Compile-time for the constants, runtime for the debt logic.
++        static_assert(SAMPLES_HIGH >= SAMPLES_MID && SAMPLES_HIGH >= SAMPLES_LOW, "batch sizing");
++        if (total_samples > sizeof(audio_buffer) / sizeof(audio_buffer[0])) {
++            fprintf(stderr, "audio: BATCH OVERRUN %lu samples > buffer, clamping\n", (unsigned long)total_samples);
++            return;
++        }
+ 
+-        for (int i = 0; i < AUDIO_FRAMES_PER_UPDATE; i++) {
++#ifdef __3DS__
++        // SoH-3DS: temporary diagnostics - measure raw synthesis cost against
++        // real time. Each batch is total_frames/32000 seconds of audio; if
++        // synthesis ticks exceed that, no pacing fix can prevent gaps.
++        extern int64_t svcGetSystemTick(void) __asm__("svcGetSystemTick");
++        const uint64_t synthStart = (uint64_t)svcGetSystemTick();
++#endif
++        for (int i = 0; i < UPDATES_PER_BATCH; i++) {
+             AudioMgr_CreateNextAudioBuffer(audio_buffer + i * (num_audio_samples * NUM_AUDIO_CHANNELS),
+                                            num_audio_samples);
+         }
++#ifdef __3DS__
++        {
++            static uint64_t sSynthTicks = 0;
++            static uint64_t sAudioFrames = 0;
++            static uint32_t sBatches = 0;
++            sSynthTicks += (uint64_t)svcGetSystemTick() - synthStart;
++            sAudioFrames += total_frames;
++            if (++sBatches % 256 == 0) {
++                // 268 ticks/us; batch real-time budget is frames/32 us.
++                const uint64_t synthUs = sSynthTicks / 268u;
++                const uint64_t budgetUs = sAudioFrames * 1000u / 32u;
++                // SPDLOG so this reaches sdmc:/logs/SoH-3DS.log on hardware,
++                // where svcOutputDebugString output is invisible.
++                SPDLOG_INFO("SoH-3DS audio: synth {}ms for {}ms of audio ({}%)", (unsigned long)(synthUs / 1000u),
++                            (unsigned long)(budgetUs / 1000u),
++                            (unsigned long)(budgetUs > 0 ? synthUs * 100u / budgetUs : 0));
++                sSynthTicks = 0;
++                sAudioFrames = 0;
++            }
++        }
++#endif
+ 
+         AudioPlayer_Play(reinterpret_cast<u8*>(audio_buffer), total_samples * sizeof(int16_t));
+     };
+@@ -1115,7 +1319,7 @@ void OTRAudio_Thread() {
+             // Generating PCM that DoPlay() would refuse creates a discontinuity
+             // audible as a click. The pre-buffer loop below will catch up once
+             // the backend drains enough.
+-            if (AudioPlayer_Buffered() + SAMPLES_MID * AUDIO_FRAMES_PER_UPDATE > AudioPlayer_GetDesiredBuffered()) {
++            if (AudioPlayer_Buffered() + SAMPLES_MID * UPDATES_PER_BATCH > AudioPlayer_GetDesiredBuffered()) {
+                 audio.processing = false;
+             } else {
+                 produce_next_batch();
+@@ -1129,13 +1333,39 @@ void OTRAudio_Thread() {
+         // The producer guard (same as above) prevents advancing the audio engine
+         // when the backend ring is already at capacity.
+         while (audio.running && AudioPlayer_Buffered() < AudioPlayer_GetDesiredBuffered()) {
+-            if (AudioPlayer_Buffered() + SAMPLES_MID * AUDIO_FRAMES_PER_UPDATE > AudioPlayer_GetDesiredBuffered()) {
++            if (AudioPlayer_Buffered() + SAMPLES_MID * UPDATES_PER_BATCH > AudioPlayer_GetDesiredBuffered()) {
+                 break;
+             }
+             produce_next_batch();
+         }
+     }
+ }
++// Scoped to OTRAudio_Thread; keep the port switch from leaking into the rest
++// of the translation unit.
++#undef UPDATES_PER_BATCH
++
++#ifdef __3DS__
++// SoH-3DS: run the audio thread off core 0, following mario-kart-64-3ds
++// (platform/3ds/source/audio_runtime_3ds.cpp). As a std::thread it lands on
++// core 0 and competes with the game loop and renderer, so synthesis starves
++// during heavy frames - audible as stutter - and the only mitigation was a
++// deep (high-latency) backend buffer. Core 2 exists on New 3DS; on Old 3DS
++// core 1 becomes usable once APT grants the app a share of the syscore.
++// <3ds.h> conflicts with libultra's typedefs, so declare the few calls used.
++extern "C" {
++typedef struct Thread_tag* Soh3dsThreadHandle;
++Soh3dsThreadHandle threadCreate(void (*entry)(void*), void* arg, size_t stackSize, int32_t prio, int32_t coreId,
++                                bool detached);
++int32_t threadJoin(Soh3dsThreadHandle thread, uint64_t timeoutNs);
++void threadFree(Soh3dsThreadHandle thread);
++int32_t APT_SetAppCpuTimeLimit(uint32_t percent);
++int32_t APT_CheckNew3DS(bool* isNew);
++}
++static Soh3dsThreadHandle sSoh3dsAudioThread = nullptr;
++static void Soh3dsAudioThreadEntry(void*) {
++    OTRAudio_Thread();
++}
++#endif
+ 
+ void OTRAudio_Init() {
+     // Precache all our samples, sequences, etc...
+@@ -1143,7 +1373,34 @@ void OTRAudio_Init() {
+ 
+     if (!audio.running) {
+         audio.running = true;
++#ifdef __3DS__
++        constexpr size_t kAudioStackSize = 128 * 1024;
++        constexpr int32_t kAudioPriority = 0x18; // higher than the 0x30 main thread
++        bool isNewModel = false;
++        APT_CheckNew3DS(&isNewModel);
++        if (isNewModel) {
++            sSoh3dsAudioThread = threadCreate(Soh3dsAudioThreadEntry, nullptr, kAudioStackSize, kAudioPriority, 2, false);
++        }
++        if (sSoh3dsAudioThread == nullptr) {
++            for (uint32_t limit : { 80u, 70u, 50u, 30u }) {
++                if (APT_SetAppCpuTimeLimit(limit) < 0) {
++                    continue;
++                }
++                sSoh3dsAudioThread = threadCreate(Soh3dsAudioThreadEntry, nullptr, kAudioStackSize, kAudioPriority, 1, false);
++                break;
++            }
++        }
++        if (sSoh3dsAudioThread != nullptr) {
++            fprintf(stderr, "soh-3ds audio: synthesis thread on core %d\n", isNewModel ? 2 : 1);
++        } else {
++            // ponytail: core-0 std::thread fallback keeps audio functional on
++            // whatever refuses the app a second core.
++            fprintf(stderr, "soh-3ds audio: no spare core, synthesis on core 0\n");
++            audio.thread = std::thread(OTRAudio_Thread);
++        }
++#else
+         audio.thread = std::thread(OTRAudio_Thread);
++#endif
+     }
+ }
+ 
+@@ -1163,7 +1420,17 @@ extern "C" void OTRAudio_Exit() {
+     audio.cv_to_thread.notify_all();
+ 
+     // Wait until the audio thread quit
++#ifdef __3DS__
++    if (sSoh3dsAudioThread != nullptr) {
++        threadJoin(sSoh3dsAudioThread, UINT64_MAX);
++        threadFree(sSoh3dsAudioThread);
++        sSoh3dsAudioThread = nullptr;
++    } else {
++        audio.thread.join();
++    }
++#else
+     audio.thread.join();
++#endif
+ #if 0
+     for (size_t i = 0; i < sequenceMapSize; i++) {
+         free(sequenceMap[i]);
+@@ -1488,16 +1755,45 @@ extern "C" RandomizerGet RetrieveRandomizerGetFromItemID(ItemID itemID) {
+ }
+ 
+ extern "C" void OTRExtScanner() {
+-    auto lst = *Ship::Context::GetRawInstance()->GetResourceManager()->GetArchiveManager()->ListFiles().get();
++    // SoH-3DS: bind by reference. ListFiles() already materialises all ~39k
++    // archive paths into a fresh vector<string>; dereferencing into `auto lst`
++    // copied every one of them again, for roughly 2.5 MB of pure duplicate on a
++    // heap that has ~13 MB left at this point. The shared_ptr keeps it alive for
++    // the loop below.
++    auto lstPtr = Ship::Context::GetRawInstance()->GetResourceManager()->GetArchiveManager()->ListFiles();
++    const auto& lst = *lstPtr;
++#ifdef __3DS__
++    {
++        struct mallinfo mi = mallinfo();
++        fprintf(stderr, "soh-3ds ext: %u entries, used=%uKiB free=%uKiB\n", (unsigned)lst.size(),
++                (unsigned)(mi.uordblks / 1024), (unsigned)(mi.fordblks / 1024));
++        fflush(stderr);
++    }
++#endif
+ 
+-    for (auto& rPath : lst) {
+-        std::vector<std::string> raw = StringHelper::Split(rPath, ".");
+-        std::string ext = raw[raw.size() - 1];
+-        std::string nPath = rPath.substr(0, rPath.size() - (ext.size() + 1));
++    ExtensionCache.reserve(lst.size());
++    for (const auto& rPath : lst) {
++        // SoH-3DS: only the final extension is wanted, so take it directly
++        // instead of splitting the whole path into a vector<string> per entry
++        // (39k transient vectors, each with its own allocations).
++        const auto dot = rPath.find_last_of('.');
++        if (dot == std::string::npos) {
++            continue;
++        }
++        const std::string ext = rPath.substr(dot + 1);
++        std::string nPath = rPath.substr(0, dot);
+         replace(nPath.begin(), nPath.end(), '\\', '/');
+ 
+         ExtensionCache[nPath] = { rPath, ext };
+     }
++#ifdef __3DS__
++    {
++        struct mallinfo mi = mallinfo();
++        fprintf(stderr, "soh-3ds ext: cache built (%u), used=%uKiB free=%uKiB\n", (unsigned)ExtensionCache.size(),
++                (unsigned)(mi.uordblks / 1024), (unsigned)(mi.fordblks / 1024));
++        fflush(stderr);
++    }
++#endif
+ }
+ 
+ // Read the port version from an OTR file
+@@ -1545,15 +1841,24 @@ bool VerifyArchiveVersion(OTRVersion version) {
+ }
+ 
+ extern "C" void InitOTR(int argc, char* argv[]) {
++    SOH3DS_INIT_TRACE("new OTRGlobals");
+     OTRGlobals::Instance = new OTRGlobals();
++    SOH3DS_INIT_TRACE("RunExtract");
+     OTRGlobals::Instance->RunExtract(argc, argv);
+ 
++    SOH3DS_INIT_TRACE("OTRGlobals::Initialize");
+     OTRGlobals::Instance->Initialize();
++    SOH3DS_INIT_TRACE("Initialize done");
++    SOH3DS_INIT_TRACE("InitOTR: CustomMessageManager");
+     CustomMessageManager::Instance = new CustomMessageManager();
++    SOH3DS_INIT_TRACE("InitOTR: ItemTableManager");
+     ItemTableManager::Instance = new ItemTableManager();
++    SOH3DS_INIT_TRACE("InitOTR: GameInteractor");
+     GameInteractor::Instance = new GameInteractor();
++    SOH3DS_INIT_TRACE("InitOTR: SaveManager");
+     SaveManager::Instance = new SaveManager();
+ 
++    SOH3DS_INIT_TRACE("InitOTR: GetConfig");
+     std::shared_ptr<Ship::Config> conf = OTRGlobals::Instance->context->GetConfig();
+     conf->RegisterVersionUpdater(std::make_shared<SOH::ConfigVersion1Updater>());
+     conf->RegisterVersionUpdater(std::make_shared<SOH::ConfigVersion2Updater>());
+@@ -1562,11 +1867,28 @@ extern "C" void InitOTR(int argc, char* argv[]) {
+     conf->RegisterVersionUpdater(std::make_shared<SOH::ConfigVersion5Updater>());
+     conf->RegisterVersionUpdater(std::make_shared<SOH::ConfigVersion6Updater>());
+     conf->RegisterVersionUpdater(std::make_shared<SOH::ConfigVersion7Updater>());
++    SOH3DS_INIT_TRACE("InitOTR: RunVersionUpdates");
+     conf->RunVersionUpdates();
+ 
++    SOH3DS_INIT_TRACE("SetupGuiElements");
+     SohGui::SetupGuiElements();
++#ifdef __3DS__
++    // SoH-3DS: AddMenuElements builds the full port-menu widget tree - the
++    // single largest InitOTR cost (6.4 s of a 21 s boot, measured) - for an
++    // ImGui menu that never draws on this port. The SohMenu object itself is
++    // still created (SetupMenu) since UpdateAudioBackendObjects needs it.
++    // Audited before gating: AddMenuElements additionally runs every
++    // MenuInit::GetInitFuncs() callback; all ten registrants
++    // (ResolutionEditor, Anchor menu, four rando trackers, mod_menu,
++    // CosmeticsEditor, Mapper, SohInputEditorWindow) are Register*Widgets
++    // functions - widget construction only. Functional game/randomizer/network
++    // init uses the separate RegisterShipInitFunc registry, which is unaffected.
++    SOH3DS_INIT_TRACE("SetupMenuElements skipped (no ImGui)");
++#else
+     SohGui::SetupMenuElements();
++#endif
+ 
++    SOH3DS_INIT_TRACE("AudioCollection");
+     AudioCollection::Instance = new AudioCollection();
+     ActorDB::Instance = new ActorDB();
+ #ifdef __APPLE__
+@@ -1578,16 +1900,22 @@ extern "C" void InitOTR(int argc, char* argv[]) {
+ #else
+     SpeechSynthesizer::Instance = new SpeechLogger();
+ #endif
++    SOH3DS_INIT_TRACE("SpeechSynthesizer::Init");
+     SpeechSynthesizer::Instance->Init();
+ 
+     CrowdControl::Instance = new CrowdControl();
+     Sail::Instance = new Sail();
+     Anchor::Instance = new Anchor();
+ 
++    SOH3DS_INIT_TRACE("OTRMessage_Init");
+     OTRMessage_Init();
++    SOH3DS_INIT_TRACE("OTRAudio_Init");
+     OTRAudio_Init();
++    SOH3DS_INIT_TRACE("OTRExtScanner");
+     OTRExtScanner();
++    SOH3DS_INIT_TRACE("VanillaItemTable_Init");
+     VanillaItemTable_Init();
++    SOH3DS_INIT_TRACE("DebugConsole_Init");
+     DebugConsole_Init();
+ 
+     // #region SOH [Randomizer] TODO: Remove these and refactor spoiler file handling for randomizer
+@@ -1597,6 +1925,7 @@ extern "C" void InitOTR(int argc, char* argv[]) {
+ 
+     Ship::Context::GetRawInstance()->GetFileDropMgr()->RegisterDropHandler(SoH_HandleConfigDrop);
+ 
++    SOH3DS_INIT_TRACE("RegisterImGuiItemIcons");
+     RegisterImGuiItemIcons();
+ 
+     time_t now = time(NULL);
+@@ -1608,6 +1937,7 @@ extern "C" void InitOTR(int argc, char* argv[]) {
+     }
+ 
+     srand(static_cast<unsigned int>(now));
++    SOH3DS_INIT_TRACE("SDLNet_Init");
+     SDLNet_Init();
+     if (CVarGetInteger(CVAR_REMOTE_CROWD_CONTROL("Enabled"), 0)) {
+         CrowdControl::Instance->Enable();
+@@ -1929,6 +2259,22 @@ ImFont* OTRGlobals::CreateFontWithSize(float size, std::string fontPath, bool is
+         ImFontConfig fontConf;
+         fontConf.FontDataOwnedByAtlas = false;
+         const ImWchar* glyph_ranges = isJapaneseFont ? mImGuiIo->Fonts->GetGlyphRangesJapanese() : nullptr;
++#ifdef __3DS__
++        // SoH-3DS: the top screen is 400x240, so nothing above ~14px is legible
++        // anyway, and the atlas has to fit in a 36 MB app heap next to the game.
++        //
++        // Three costs are cut here:
++        //  - ImGui defaults to 3x3 oversampling, which rasterises 9x the area.
++        //  - The Japanese font merges GetGlyphRangesJapanese() (~3000 CJK glyphs);
++        //    at 24px that alone is a multi-megabyte atlas and minutes of ARM11
++        //    rasterisation. Latin-only keeps the ImFont* valid for every caller.
++        //  - Sizes are clamped so the 20px and 24px variants stop duplicating
++        //    large atlases the screen cannot show.
++        fontConf.OversampleH = fontConf.OversampleV = 1;
++        fontConf.PixelSnapH = true;
++        glyph_ranges = nullptr;
++        size = std::min(size, 14.0f);
++#endif
+         font = mImGuiIo->Fonts->AddFontFromMemoryTTF(fontData->Data, static_cast<int>(fontData->DataSize), size,
+                                                      &fontConf, glyph_ranges);
+     }
+@@ -2418,6 +2764,14 @@ extern "C" uint8_t Randomizer_GenerateRandomizer() {
+     return GenerateRandomizer() ? 1 : 0;
+ }
+ 
++extern "C" bool Randomizer_IsGenerating() {
++    return IsRandoGenerating();
++}
++
++extern "C" void Randomizer_WaitForGeneration() {
++    WaitForRandoGeneration();
++}
++
+ extern "C" void Randomizer_ShowRandomizerMenu() {
+     SohGui::ShowRandomizerSettingsMenu();
+ }
+diff --git a/soh/soh/OTRGlobals.h b/soh/soh/OTRGlobals.h
+index 079b2b3f..486ca2a7 100644
+--- a/soh/soh/OTRGlobals.h
++++ b/soh/soh/OTRGlobals.h
+@@ -94,7 +94,7 @@ void Ctx_WriteSaveFile(uintptr_t addr, void* dramAddr, size_t size);
+ 
+ uint64_t GetPerfCounter();
+ uint64_t osGetTime(void);
+-uint32_t osGetCount(void);
++u32 osGetCount(void); // SoH-3DS: u32, matching libultraship/libultra/os.h
+ float OTRGetAspectRatio(void);
+ float OTRGetDimensionFromLeftEdge(float v);
+ float OTRGetDimensionFromRightEdge(float v);
+@@ -123,6 +123,8 @@ uint8_t Randomizer_IsSeedGenerated();
+ uint8_t Randomizer_IsSpoilerLoaded();
+ void Randomizer_SetSpoilerLoaded(bool spoilerLoaded);
+ uint8_t Randomizer_GenerateRandomizer();
++bool Randomizer_IsGenerating();
++void Randomizer_WaitForGeneration();
+ void Randomizer_ShowRandomizerMenu();
+ GetItemEntry ItemTable_Retrieve(int16_t getItemID);
+ GetItemEntry ItemTable_RetrieveEntry(s16 modIndex, s16 getItemID);
+diff --git a/soh/soh/ResourceManagerHelpers.cpp b/soh/soh/ResourceManagerHelpers.cpp
+index 69a482f6..fe8917aa 100644
+--- a/soh/soh/ResourceManagerHelpers.cpp
++++ b/soh/soh/ResourceManagerHelpers.cpp
+@@ -300,6 +300,20 @@ extern "C" uint8_t ResourceMgr_TexIsRaw(const char* texPath) {
+ 
+ extern "C" uint8_t ResourceMgr_ResourceIsBackground(char* texPath) {
+     auto res = ResourceMgr_GetResourceByNameHandlingMQ(texPath);
++    // SoH-3DS: hardware dump 21 (data abort, FAR=4) was this exact deref of
++    // a null lookup. The emulator repro proved the trigger: the resource's
++    // own load threw a transient bad_alloc at the heap ceiling ("resource:
++    // exception loading scenes/.../link_home_room_0Background...:
++    // std::bad_alloc" logged immediately before these null lookups) - NOT
++    // object eviction. Transient failures write no NotFound cache line, so
++    // a later lookup of the same path MAY succeed; this function itself
++    // only classifies - it schedules nothing. Null means "not a
++    // background"; the caller's normal-texture path has its own
++    // null-background guard downstream.
++    if (res == nullptr) {
++        fprintf(stderr, "resource: IsBackground null lookup %s\n", texPath);
++        return 0;
++    }
+     return res->GetInitData()->Type == static_cast<uint32_t>(SOH::ResourceType::SOH_Background);
+ }
+ 
+@@ -578,6 +592,11 @@ extern "C" SoundFontSample* ResourceMgr_LoadAudioSample(const char* path) {
+ }
+ 
+ extern "C" SoundFont* ResourceMgr_LoadAudioSoundFontByName(const char* path) {
++    // SoH-3DS: fontMap lookups can legitimately produce NULL (out-of-table or
++    // unset SAF fontIds); std::string(NULL) downstream is UB.
++    if (path == nullptr) {
++        return nullptr;
++    }
+     return (SoundFont*)ResourceGetDataByName(path);
+ }
+ 
+diff --git a/soh/soh/SaveManager.cpp b/soh/soh/SaveManager.cpp
+index 22786153..27f3b0d5 100644
+--- a/soh/soh/SaveManager.cpp
++++ b/soh/soh/SaveManager.cpp
+@@ -29,6 +29,10 @@ extern "C" {
+ extern "C" SaveContext gSaveContext;
+ using namespace std::string_literals;
+ 
++#if defined(__WIIU__) || defined(__SWITCH__) || defined(__3DS__)
++int copy_file(const char* src, const char* dst); // defined below; console fs::copy_file/rename workaround
++#endif
++
+ void SaveManager::WriteSaveFile(const std::filesystem::path& savePath, const uintptr_t addr, void* dramAddr,
+                                 const size_t size) {
+     std::ofstream saveFile = std::ofstream(savePath, std::fstream::in | std::fstream::out | std::fstream::binary);
+@@ -582,7 +586,7 @@ void SaveManager::StartupCheckAndInitMeta(int fileNum) {
+             std::string newFileName =
+                 Ship::Context::GetPathRelativeToAppDirectory("Save") +
+                 ("/file" + std::to_string(fileNum + 1) + "-" + std::to_string(GetUnixTimestamp()) + ".bak");
+-#if defined(__SWITCH__) || defined(__WIIU__)
++#if defined(__SWITCH__) || defined(__WIIU__) || defined(__3DS__)
+             copy_file(fileName.c_str(), newFileName.c_str());
+             std::filesystem::remove(fileName);
+ #else
+@@ -1182,7 +1186,7 @@ void SaveManager::InitFileMaxed() {
+     Flags_SetRandomizerInf(RAND_INF_OBTAINED_ROCS_FEATHER);
+ }
+ 
+-#if defined(__WIIU__) || defined(__SWITCH__)
++#if defined(__WIIU__) || defined(__SWITCH__) || defined(__3DS__)
+ // std::filesystem::copy_file doesn't work properly with the Wii U's toolchain atm
+ int copy_file(const char* src, const char* dst) {
+     alignas(0x40) uint8_t buf[4096];
+@@ -1210,8 +1214,44 @@ int copy_file(const char* src, const char* dst) {
+ 
+ // Threaded SaveFile takes copy of gSaveContext for local unmodified storage
+ 
++#ifdef __3DS__
++// SoH-3DS: SaveSection's `new SaveContext` was a 135.2 KiB CONTIGUOUS
++// request issued on EVERY scene transition (CheckTracker::SetAreaSpoiled).
++// A hardware GDB session caught it throwing std::bad_alloc with 57.5 MB
++// used of a 66 MB heap - ~8.5 MB free, so this is FRAGMENTATION, not
++// exhaustion, which is why scene-resource eviction alone could never stop
++// it.
++//
++// The copy exists solely so the game thread may keep mutating gSaveContext
++// while an async save serializes it. This port simply does not save
++// asynchronously: SaveSection runs the save inline and hands over
++// &gSaveContext itself. That removes the allocation entirely instead of
++// managing it - no snapshot, no busy flag, no waiting, no dropped saves, no
++// deadlock window. Cost is a brief hitch on the transition that saves,
++// which already hitches for the scene load.
++#endif
++
+ void SaveManager::SaveFileThreaded(int fileNum, SaveContext* saveContext, int sectionID) {
+     saveMtx.lock();
++    // Exception-safe release: on ANY exit path (including a throw inside the
++    // JSON/file work) the snapshot is released and the mutex unlocked. A
++    // stuck busy flag would silently disable saving for the whole session,
++    // and a stuck mutex would deadlock every later save.
++    struct SaveScopeGuard {
++        SaveManager* mgr;
++        SaveContext* ctx;
++        ~SaveScopeGuard() {
++#ifdef __3DS__
++            // Saves run inline against gSaveContext, which is static; only
++            // a heap copy may be deleted.
++            if (ctx != &gSaveContext)
++#endif
++            {
++                delete ctx;
++            }
++            mgr->saveMtx.unlock();
++        }
++    } saveScopeGuard{ this, saveContext };
+     SPDLOG_INFO("Save File - fileNum: {}", fileNum);
+     // Needed for first time save, hasn't changed in forever anyway
+     saveBlock["version"] = 1;
+@@ -1260,7 +1300,11 @@ void SaveManager::SaveFileThreaded(int fileNum, SaveContext* saveContext, int se
+         std::filesystem::remove(tempFile);
+     }
+ 
+-#if defined(__SWITCH__) || defined(__WIIU__)
++// SoH-3DS: sdmc devoptab shares the console constraint - fs::rename cannot
++// replace an existing destination and the desktop branch uses the throwing
++// overloads on a detached worker (std::terminate on the second save to a
++// slot). Take the console remove+copy path.
++#if defined(__SWITCH__) || defined(__WIIU__) || defined(__3DS__)
+     FILE* w = fopen(tempFile.c_str(), "w");
+     std::string json_string = saveBlock.dump(1);
+     fwrite(json_string.c_str(), sizeof(char), json_string.length(), w);
+@@ -1271,7 +1315,7 @@ void SaveManager::SaveFileThreaded(int fileNum, SaveContext* saveContext, int se
+     output.close();
+ #endif
+ 
+-#if defined(__SWITCH__) || defined(__WIIU__)
++#if defined(__SWITCH__) || defined(__WIIU__) || defined(__3DS__)
+     if (std::filesystem::exists(fileName)) {
+         std::filesystem::remove(fileName);
+     }
+@@ -1283,13 +1327,14 @@ void SaveManager::SaveFileThreaded(int fileNum, SaveContext* saveContext, int se
+     std::filesystem::rename(tempFile, fileName);
+ #endif
+ 
+-    delete saveContext;
+     InitMeta(fileNum);
+     GameInteractor::Instance->ExecuteHooks<GameInteractor::OnSaveFile>(fileNum, sectionID);
+     SPDLOG_INFO("Save File Finish - fileNum: {}", fileNum);
+-    saveMtx.unlock();
++    // snapshot release + saveMtx.unlock() happen in saveScopeGuard's dtor
+ }
+ 
++// (3DS snapshot statics are declared above SaveFileThreaded, which uses them)
++
+ // SaveSection creates a copy of gSaveContext to prevent mid-save data modification, and passes its reference to
+ // SaveFileThreaded This should never be called with threaded == false except during file creation
+ void SaveManager::SaveSection(int fileNum, int sectionID, bool threaded) {
+@@ -1302,13 +1347,42 @@ void SaveManager::SaveSection(int fileNum, int sectionID, bool threaded) {
+         SPDLOG_ERROR("SaveSection: Section ID not registered.");
+         return;
+     }
+-    auto saveContext = new SaveContext;
++#ifdef __3DS__
++    // Inline, zero-copy: see the note above SaveFileThreaded. No allocation,
++    // so the fragmentation failure this used to hit cannot occur, and no
++    // save is ever dropped or delayed. `threaded` is deliberately ignored -
++    // saveMtx serialized the work anyway, so running it here costs the same
++    // wall time it already cost the pool.
++    //
++    // Running inline means saveMtx (non-recursive) is now held by the
++    // CALLING thread, so a save triggered from inside a save - e.g. a future
++    // OnSaveFile hook; none exist today - would self-deadlock where the
++    // detached version merely queued. Refuse the nested save instead of
++    // hanging the console.
++    static thread_local bool sInSave = false;
++    if (sInSave) {
++        SPDLOG_ERROR("SaveSection: refused re-entrant save (fileNum {} section {})", fileNum, sectionID);
++        return;
++    }
++    struct InSaveGuard {
++        bool* flag;
++        ~InSaveGuard() {
++            *flag = false;
++        }
++    };
++    sInSave = true;
++    InSaveGuard inSaveGuard{ &sInSave };
++    (void)threaded;
++    SaveFileThreaded(fileNum, &gSaveContext, sectionID);
++#else
++    SaveContext* saveContext = new SaveContext;
+     memcpy(saveContext, &gSaveContext, sizeof(gSaveContext));
+     if (threaded) {
+         smThreadPool->detach_task(std::bind(&SaveManager::SaveFileThreaded, this, fileNum, saveContext, sectionID));
+     } else {
+         SaveFileThreaded(fileNum, saveContext, sectionID);
+     }
++#endif
+ }
+ 
+ void SaveManager::SaveFile(int fileNum) {
+@@ -1395,7 +1469,7 @@ void SaveManager::LoadFile(int fileNum) {
+         std::string newFileName =
+             Ship::Context::GetPathRelativeToAppDirectory("Save") +
+             ("/file" + std::to_string(fileNum + 1) + "-" + std::to_string(GetUnixTimestamp()) + ".bak");
+-#if defined(__SWITCH__) || defined(__WIIU__)
++#if defined(__SWITCH__) || defined(__WIIU__) || defined(__3DS__)
+         copy_file(fileName.c_str(), newFileName.c_str());
+         std::filesystem::remove(fileName);
+ #else
+@@ -2473,7 +2547,7 @@ void SaveManager::LoadStruct(const std::string& name, LoadStructFunc func) {
+ void SaveManager::CopyZeldaFile(int from, int to) {
+     assert(std::filesystem::exists(GetFileName(from)));
+     DeleteZeldaFile(to);
+-#if defined(__WIIU__) || defined(__SWITCH__)
++#if defined(__WIIU__) || defined(__SWITCH__) || defined(__3DS__)
+     copy_file(GetFileName(from).c_str(), GetFileName(to).c_str());
+ #else
+     std::filesystem::copy_file(GetFileName(from), GetFileName(to));
+diff --git a/soh/soh/SohGui/SohGui.cpp b/soh/soh/SohGui/SohGui.cpp
+index 3e4aa5d7..81a3b2d6 100644
+--- a/soh/soh/SohGui/SohGui.cpp
++++ b/soh/soh/SohGui/SohGui.cpp
+@@ -23,6 +23,20 @@
+ #include "soh/Enhancements/mod_menu.h"
+ #include "soh/Network/Anchor/Anchor.h"
+ 
++// SoH-3DS: per-window memory tracing. Every previous "hang" in startup was the
++// heap running out, with the allocation-failure path never returning, so report
++// used/free at each window construction rather than guessing again.
++#ifdef __3DS__
++#include <malloc.h>
++#include <cstdio>
++// SoH-3DS: route through the boot-status console/stderr like the InitOTR
++// breadcrumbs; attributes SetupGuiElements' boot cost per window.
++extern "C" void Soh3dsBootStatus(const char* msg) __attribute__((weak));
++#define SOH3DS_GUI_TRACE(msg) (Soh3dsBootStatus != nullptr ? Soh3dsBootStatus("gui: " msg) : (void)0)
++#else
++#define SOH3DS_GUI_TRACE(msg) ((void)0)
++#endif
++
+ namespace SohGui {
+ 
+ // MARK: - Properties
+@@ -105,6 +119,7 @@ void SetupMenu() {
+ 
+     mModalWindow = std::make_shared<SohModalWindow>(CVAR_WINDOW("ModalWindow"), "Modal Window");
+     gui->AddGuiWindow(mModalWindow);
++    SOH3DS_GUI_TRACE("mModalWindow");
+     mModalWindow->Show();
+ }
+ 
+@@ -113,17 +128,21 @@ void SetupMenuElements() {
+ }
+ 
+ void SetupGuiElements() {
++    SOH3DS_GUI_TRACE("entry");
+     auto gui = Ship::Context::GetRawInstance()->GetWindow()->GetGui();
+ 
+     mConsoleWindow = std::make_shared<SohConsoleWindow>(CVAR_WINDOW("SohConsole"), "Console##SoH", ImVec2(820, 630));
+     gui->AddGuiWindow(mConsoleWindow);
++    SOH3DS_GUI_TRACE("mConsoleWindow");
+ 
+     mGfxDebuggerWindow =
+         std::make_shared<SohGfxDebuggerWindow>(CVAR_WINDOW("SohGfxDebugger"), "GfxDebugger##SoH", ImVec2(820, 630));
+     gui->AddGuiWindow(mGfxDebuggerWindow);
++    SOH3DS_GUI_TRACE("mGfxDebuggerWindow");
+ 
+     mStatsWindow = std::make_shared<SohStatsWindow>(CVAR_WINDOW("SohStats"), "Stats##Soh", ImVec2(400, 100));
+     gui->AddGuiWindow(mStatsWindow);
++    SOH3DS_GUI_TRACE("mStatsWindow");
+ 
+     /*mInputEditorWindow = gui->GetGuiWindow("Controller Configuration");
+     if (mInputEditorWindow == nullptr) {
+@@ -132,75 +151,103 @@ void SetupGuiElements() {
+ 
+     mModMenuWindow = std::make_shared<ModMenuWindow>(CVAR_WINDOW("ModMenu"), "Mod Menu", ImVec2(820, 630));
+     gui->AddGuiWindow(mModMenuWindow);
++    SOH3DS_GUI_TRACE("mModMenuWindow");
+     mAudioEditorWindow = std::make_shared<AudioEditor>(CVAR_WINDOW("AudioEditor"), "Audio Editor", ImVec2(820, 630));
+     gui->AddGuiWindow(mAudioEditorWindow);
++    SOH3DS_GUI_TRACE("mAudioEditorWindow");
+     mInputViewer = std::make_shared<InputViewer>(CVAR_WINDOW("InputViewer"), "Input Viewer");
+     gui->AddGuiWindow(mInputViewer);
++    SOH3DS_GUI_TRACE("mInputViewer");
+     mInputViewerSettings = std::make_shared<InputViewerSettingsWindow>(CVAR_WINDOW("InputViewerSettings"),
+                                                                        "Input Viewer Settings", ImVec2(500, 525));
+     gui->AddGuiWindow(mInputViewerSettings);
++    SOH3DS_GUI_TRACE("mInputViewerSettings");
++    SOH3DS_GUI_TRACE("CosmeticsEditor: before ctor");
+     mCosmeticsEditorWindow =
+         std::make_shared<CosmeticsEditorWindow>(CVAR_WINDOW("CosmeticsEditor"), "Cosmetics Editor", ImVec2(550, 520));
++    SOH3DS_GUI_TRACE("CosmeticsEditor: after ctor");
+     gui->AddGuiWindow(mCosmeticsEditorWindow);
++    SOH3DS_GUI_TRACE("mCosmeticsEditorWindow");
+     mActorViewerWindow =
+         std::make_shared<ActorViewerWindow>(CVAR_WINDOW("ActorViewer"), "Actor Viewer", ImVec2(520, 600));
+     gui->AddGuiWindow(mActorViewerWindow);
++    SOH3DS_GUI_TRACE("mActorViewerWindow");
+     mColViewerWindow =
+         std::make_shared<ColViewerWindow>(CVAR_WINDOW("CollisionViewer"), "Collision Viewer", ImVec2(520, 600));
+     gui->AddGuiWindow(mColViewerWindow);
++    SOH3DS_GUI_TRACE("mColViewerWindow");
+     mSaveEditorWindow = std::make_shared<SaveEditorWindow>(CVAR_WINDOW("SaveEditor"), "Save Editor", ImVec2(520, 600));
+     gui->AddGuiWindow(mSaveEditorWindow);
++    SOH3DS_GUI_TRACE("mSaveEditorWindow");
+     mHookDebuggerWindow =
+         std::make_shared<HookDebuggerWindow>(CVAR_WINDOW("HookDebugger"), "Hook Debugger", ImVec2(1250, 850));
+     gui->AddGuiWindow(mHookDebuggerWindow);
++    SOH3DS_GUI_TRACE("mHookDebuggerWindow");
+     mDLViewerWindow =
+         std::make_shared<DLViewerWindow>(CVAR_WINDOW("DisplayListViewer"), "Display List Viewer", ImVec2(520, 600));
+     gui->AddGuiWindow(mDLViewerWindow);
++    SOH3DS_GUI_TRACE("mDLViewerWindow");
+     mValueViewerWindow =
+         std::make_shared<ValueViewerWindow>(CVAR_WINDOW("ValueViewer"), "Value Viewer", ImVec2(520, 600));
+     gui->AddGuiWindow(mValueViewerWindow);
++    SOH3DS_GUI_TRACE("mValueViewerWindow");
+     mMessageViewerWindow =
+         std::make_shared<MessageViewer>(CVAR_WINDOW("MessageViewer"), "Message Viewer", ImVec2(520, 600));
+     gui->AddGuiWindow(mMessageViewerWindow);
++    SOH3DS_GUI_TRACE("mMessageViewerWindow");
+     mGameplayStatsWindow =
+         std::make_shared<GameplayStatsWindow>(CVAR_WINDOW("GameplayStats"), "Gameplay Stats", ImVec2(480, 550));
+     gui->AddGuiWindow(mGameplayStatsWindow);
++    SOH3DS_GUI_TRACE("mGameplayStatsWindow");
+     mCheckTrackerWindow = std::make_shared<CheckTracker::CheckTrackerWindow>(CVAR_WINDOW("CheckTracker"),
+                                                                              "Check Tracker", ImVec2(400, 540));
+     gui->AddGuiWindow(mCheckTrackerWindow);
++    SOH3DS_GUI_TRACE("mCheckTrackerWindow");
+     mCheckTrackerSettingsWindow = std::make_shared<CheckTracker::CheckTrackerSettingsWindow>(
+         CVAR_WINDOW("CheckTrackerSettings"), "Check Tracker Settings", ImVec2(600, 375));
+     gui->AddGuiWindow(mCheckTrackerSettingsWindow);
++    SOH3DS_GUI_TRACE("mCheckTrackerSettingsWindow");
+     mEntranceTrackerWindow = std::make_shared<EntranceTracker::EntranceTrackerWindow>(
+         CVAR_WINDOW("EntranceTracker"), "Entrance Tracker", ImVec2(500, 750));
+     gui->AddGuiWindow(mEntranceTrackerWindow);
++    SOH3DS_GUI_TRACE("mEntranceTrackerWindow");
+     mEntranceTrackerSettingsWindow = std::make_shared<EntranceTracker::EntranceTrackerSettingsWindow>(
+         CVAR_WINDOW("EntranceTrackerSettings"), "Entrance Tracker Settings", ImVec2(600, 375));
+     gui->AddGuiWindow(mEntranceTrackerSettingsWindow);
++    SOH3DS_GUI_TRACE("mEntranceTrackerSettingsWindow");
+     mHintTrackerWindow =
+         std::make_shared<HintTracker::HintTrackerWindow>(CVAR_WINDOW("HintTracker"), "Hint Tracker", ImVec2(500, 600));
+     gui->AddGuiWindow(mHintTrackerWindow);
++    SOH3DS_GUI_TRACE("mHintTrackerWindow");
+     mHintTrackerSettingsWindow = std::make_shared<HintTracker::HintTrackerSettingsWindow>(
+         CVAR_WINDOW("HintTrackerSettings"), "Hint Tracker Settings", ImVec2(600, 375));
+     gui->AddGuiWindow(mHintTrackerSettingsWindow);
++    SOH3DS_GUI_TRACE("mHintTrackerSettingsWindow");
+     mItemTrackerWindow =
+         std::make_shared<ItemTrackerWindow>(CVAR_WINDOW("ItemTracker"), "Item Tracker", ImVec2(350, 600));
+     gui->AddGuiWindow(mItemTrackerWindow);
++    SOH3DS_GUI_TRACE("mItemTrackerWindow");
+     mItemTrackerSettingsWindow = std::make_shared<ItemTrackerSettingsWindow>(CVAR_WINDOW("ItemTrackerSettings"),
+                                                                              "Item Tracker Settings", ImVec2(733, 472));
+     gui->AddGuiWindow(mItemTrackerSettingsWindow);
++    SOH3DS_GUI_TRACE("mItemTrackerSettingsWindow");
+     mTimeSplitWindow = std::make_shared<TimeSplitWindow>(CVAR_WINDOW("TimeSplits"), "Time Splits", ImVec2(450, 660));
+     gui->AddGuiWindow(mTimeSplitWindow);
++    SOH3DS_GUI_TRACE("mTimeSplitWindow");
+     mPlandomizerWindow =
+         std::make_shared<PlandomizerWindow>(CVAR_WINDOW("PlandomizerEditor"), "Plandomizer Editor", ImVec2(850, 760));
+     gui->AddGuiWindow(mPlandomizerWindow);
++    SOH3DS_GUI_TRACE("mPlandomizerWindow");
+     mNotificationWindow = std::make_shared<Notification::Window>(CVAR_WINDOW("Notifications"), "Notifications Window");
+     gui->AddGuiWindow(mNotificationWindow);
++    SOH3DS_GUI_TRACE("mNotificationWindow");
+     mNotificationWindow->Show();
+     mTimeDisplayWindow = std::make_shared<TimeDisplayWindow>(CVAR_WINDOW("TimeDisplayEnabled"), "Additional Timers");
+     gui->AddGuiWindow(mTimeDisplayWindow);
++    SOH3DS_GUI_TRACE("mTimeDisplayWindow");
+     mAnchorRoomWindow = std::make_shared<AnchorRoomWindow>(CVAR_WINDOW("AnchorRoom"), "Anchor Room");
+     gui->AddGuiWindow(mAnchorRoomWindow);
++    SOH3DS_GUI_TRACE("mAnchorRoomWindow");
+ }
+ 
+ void Destroy() {
+diff --git a/soh/soh/SohGui/SohMenuRandomizer.cpp b/soh/soh/SohGui/SohMenuRandomizer.cpp
+index 86d69d4a..e82adb4b 100644
+--- a/soh/soh/SohGui/SohMenuRandomizer.cpp
++++ b/soh/soh/SohGui/SohMenuRandomizer.cpp
+@@ -71,7 +71,7 @@ void DrawLocationsMenu(WidgetInfo& info) {
+     int32_t currMQDungeonSetting = CVarGetInteger(CVAR_RANDOMIZER_SETTING("MQDungeons"), 0) |
+                                    CVarGetInteger(CVAR_RANDOMIZER_SETTING("MQDungeonCount"), 0) << 8;
+     static ImVec2 cellPadding(8.0f, 8.0f);
+-    bool generating = CVarGetInteger(CVAR_GENERAL("RandoGenerating"), 0);
++    bool generating = IsRandoGenerating();
+     bool disableEditingRandoSettings = generating || CVarGetInteger(CVAR_GENERAL("OnFileSelectNameEntry"), 0);
+     ImGui::BeginDisabled(CVarGetInteger(CVAR_SETTING("DisableChanges"), 0) || disableEditingRandoSettings);
+     ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, cellPadding);
+@@ -363,7 +363,7 @@ void DrawTricksMenu(WidgetInfo& info) {
+     auto ctx = Rando::Context::GetInstance();
+     auto randoSettings = Rando::Settings::GetInstance();
+     static ImVec2 cellPadding(8.0f, 8.0f);
+-    bool generating = CVarGetInteger(CVAR_GENERAL("RandoGenerating"), 0);
++    bool generating = IsRandoGenerating();
+     bool disableEditingRandoSettings = generating || CVarGetInteger(CVAR_GENERAL("OnFileSelectNameEntry"), 0);
+     if (tricksDirty) {
+         tricksDirty = false;
+@@ -729,18 +729,15 @@ void SohMenu::AddMenuRandomizer() {
+     AddWidget(path, "Randomize All Settings", WIDGET_BUTTON)
+         .Callback([](WidgetInfo& info) { Rando::Settings::GetInstance()->RandomizeAllSettings(); })
+         .PreFunc([](WidgetInfo& info) {
+-            info.options->disabled = CVarGetInteger(CVAR_GENERAL("RandoGenerating"), 0) ||
+-                                     CVarGetInteger(CVAR_GENERAL("OnFileSelectNameEntry"), 0);
++            info.options->disabled = IsRandoGenerating() || CVarGetInteger(CVAR_GENERAL("OnFileSelectNameEntry"), 0);
+         })
+         .Options(ButtonOptions()
+                      .Size(ImVec2(250.f, 0.f))
+                      .Tooltip("Randomizes all randomizer settings to random valid values (excludes tricks)."))
+         .SameLine(true);
+     AddWidget(path, "Spoiler File", WIDGET_CUSTOM).CustomFunction([](WidgetInfo& info) {
+-        JoinRandoGenerationThread();
+         if (!CVarGetInteger(CVAR_RANDOMIZER_SETTING("DontGenerateSpoiler"), 0)) {
+-            std::string spoilerfilepath = CVarGetString(CVAR_GENERAL("SpoilerLog"), "");
+-            ImGui::Text("Spoiler File: %s", spoilerfilepath.c_str());
++            ImGui::Text("Spoiler File: %s", CVarGetString(CVAR_GENERAL("SpoilerLog"), ""));
+         }
+     });
+ 
+diff --git a/soh/soh/SohGui/SohMenuStartingItems.cpp b/soh/soh/SohGui/SohMenuStartingItems.cpp
+index e97d802b..173f9531 100644
+--- a/soh/soh/SohGui/SohMenuStartingItems.cpp
++++ b/soh/soh/SohGui/SohMenuStartingItems.cpp
+@@ -7,6 +7,7 @@
+ #include "soh/SohGui/ImGuiUtils.h"
+ #include "soh/OTRGlobals.h"
+ #include "soh/cvar_prefixes.h"
++#include "soh/Enhancements/randomizer/randomizer.h"
+ #include "soh/Enhancements/randomizer/settings.h"
+ 
+ namespace SohGui {
+@@ -144,7 +145,7 @@ static void StartingItemCombobox(RandomizerSettingKey rsk) {
+ }
+ 
+ void DrawStartingItemsMenu(WidgetInfo& info) {
+-    bool generating = CVarGetInteger(CVAR_GENERAL("RandoGenerating"), 0);
++    bool generating = IsRandoGenerating();
+     bool disableEditingRandoSettings = generating || CVarGetInteger(CVAR_GENERAL("OnFileSelectNameEntry"), 0);
+     ImGui::BeginDisabled(CVarGetInteger(CVAR_SETTING("DisableChanges"), 0) || disableEditingRandoSettings);
+ 
+diff --git a/soh/soh/SohGui/UIWidgetOptions.hpp b/soh/soh/SohGui/UIWidgetOptions.hpp
+index 9d6c1873..b4f7e3e3 100644
+--- a/soh/soh/SohGui/UIWidgetOptions.hpp
++++ b/soh/soh/SohGui/UIWidgetOptions.hpp
+@@ -1,3 +1,6 @@
++// SoH-3DS: s32 rather than int32_t at boundaries with decomp types.
++// devkitARM makes int32_t `long int`, a distinct type from s32, so
++// references and template arguments will not bind across the two.
+ #pragma once
+ 
+ #include <map>
+@@ -267,8 +270,15 @@ struct ComboboxOptions : WidgetOptions {
+     ImGuiComboFlags flags = 0;
+     Colors color = Colors::LightBlue;
+ 
+-    ComboboxOptions& ComboMap(std::map<int32_t, const char*> comboMap_) {
+-        comboMap = comboMap_;
++    // SoH-3DS: templated on the key type. Callers pass both std::map<s32,...>
++    // and std::map<int32_t,...>, which on devkitARM are different types (int vs
++    // long int) even though both are 32 bits. Accepting either and converting
++    // avoids editing ~40 call sites, and is a no-op where the two coincide.
++    template <typename K> ComboboxOptions& ComboMap(const std::map<K, const char*>& comboMap_) {
++        comboMap.clear();
++        for (const auto& entry : comboMap_) {
++            comboMap[static_cast<int32_t>(entry.first)] = entry.second;
++        }
+         return *this;
+     }
+ 
+diff --git a/soh/soh/SohGui/UIWidgets.cpp b/soh/soh/SohGui/UIWidgets.cpp
+index 9e6d80bf..7f2e2b5a 100644
+--- a/soh/soh/SohGui/UIWidgets.cpp
++++ b/soh/soh/SohGui/UIWidgets.cpp
+@@ -1054,7 +1054,7 @@ bool CVarRadioButton(const char* text, const char* cvarName, int32_t id, const R
+     return ret;
+ }
+ 
+-void DrawFlagArray32(const std::string& name, uint32_t& flags, Colors color) {
++void DrawFlagArray32(const std::string& name, u32& flags, Colors color) {
+     ImGui::PushID(name.c_str());
+     for (int32_t flagIndex = 0; flagIndex < 32; flagIndex++) {
+         if ((flagIndex % 8) != 0) {
+@@ -1086,7 +1086,7 @@ void DrawFlagArray32(const std::string& name, uint32_t& flags, Colors color) {
+     ImGui::PopID();
+ }
+ 
+-void DrawFlagArray16(const std::string& name, uint16_t& flags, Colors color) {
++void DrawFlagArray16(const std::string& name, u16& flags, Colors color) {
+     ImGui::PushID(name.c_str());
+     for (int16_t flagIndex = 0; flagIndex < 16; flagIndex++) {
+         if ((flagIndex % 8) != 0) {
+@@ -1118,7 +1118,7 @@ void DrawFlagArray16(const std::string& name, uint16_t& flags, Colors color) {
+     ImGui::PopID();
+ }
+ 
+-void DrawFlagArray8(const std::string& name, uint8_t& flags, Colors color) {
++void DrawFlagArray8(const std::string& name, u8& flags, Colors color) {
+     ImGui::PushID(name.c_str());
+     for (int8_t flagIndex = 0; flagIndex < 8; flagIndex++) {
+         if ((flagIndex % 8) != 0) {
+@@ -1150,7 +1150,7 @@ void DrawFlagArray8(const std::string& name, uint8_t& flags, Colors color) {
+     ImGui::PopID();
+ }
+ 
+-void DrawFlagArray8Mask(const std::string& name, uint8_t& flags, Colors color) {
++void DrawFlagArray8Mask(const std::string& name, u8& flags, Colors color) {
+     ImGui::PushID(name.c_str());
+     for (int8_t flagIndex = 0; flagIndex < 8; flagIndex++) {
+         if ((flagIndex % 8) != 0) {
+@@ -1300,12 +1300,12 @@ void BeginCardLayout(const CardLayoutOptions& options) {
+     CardLayoutState* state = new CardLayoutState();
+ 
+     float availWidth = ImGui::GetContentRegionAvail().x;
+-    int columnsPerRow = ImClamp(options.columnsPerRow, 1, options.columnsPerRow);
++    int columnsPerRow = ImClamp<int32_t>(options.columnsPerRow, 1, options.columnsPerRow);
+     if (options.minColumnWidth > 0.0f) {
+         float denom = options.minColumnWidth + options.spacing;
+         if (denom > 0.0f) {
+             int widthLimitedColumns = static_cast<int>(ImFloor((availWidth + options.spacing) / denom));
+-            columnsPerRow = ImClamp(widthLimitedColumns, 1, options.columnsPerRow);
++            columnsPerRow = ImClamp<int32_t>(widthLimitedColumns, 1, options.columnsPerRow);
+         }
+     }
+     columnsPerRow = ImMax(columnsPerRow, 1);
+diff --git a/soh/soh/SohGui/UIWidgets.hpp b/soh/soh/SohGui/UIWidgets.hpp
+index c8961487..3532a46f 100644
+--- a/soh/soh/SohGui/UIWidgets.hpp
++++ b/soh/soh/SohGui/UIWidgets.hpp
+@@ -458,9 +458,12 @@ template <typename T = int32_t>
+ bool CVarCombobox(const char* label, const char* cvarName, const std::map<T, const char*>& comboMap,
+                   const ComboboxOptions& options = {}) {
+     bool dirty = false;
+-    int32_t value = CVarGetInteger(cvarName, options.defaultIndex);
++    // SoH-3DS: the local must be T, not int32_t. Combobox<T> takes a T*, and on
++    // devkitARM int32_t is `long int` - so with T deduced as `int` from the map
++    // key, &value would be a long* and no overload matches.
++    T value = static_cast<T>(CVarGetInteger(cvarName, options.defaultIndex));
+     if (Combobox<T>(label, &value, comboMap, options)) {
+-        CVarSetInteger(cvarName, value);
++        CVarSetInteger(cvarName, static_cast<int32_t>(value));
+         Ship::Context::GetRawInstance()->GetWindow()->GetGui()->SaveConsoleVariablesNextFrame();
+         ShipInit::Init(cvarName);
+         dirty = true;
+@@ -512,10 +515,10 @@ bool RadioButton(const char* label, bool active);
+ bool CVarRadioButton(const char* text, const char* cvarName, int32_t id, const RadioButtonsOptions& options);
+ bool StateButton(const char* str_id, const char* label, ImVec2 size, UIWidgets::ButtonOptions options,
+                  ImGuiButtonFlags flags = ImGuiButtonFlags_None);
+-void DrawFlagArray32(const std::string& name, uint32_t& flags, Colors color = Colors::LightBlue);
+-void DrawFlagArray16(const std::string& name, uint16_t& flags, Colors color = Colors::LightBlue);
+-void DrawFlagArray8(const std::string& name, uint8_t& flags, Colors color = Colors::LightBlue);
+-void DrawFlagArray8Mask(const std::string& name, uint8_t& flags, Colors color = Colors::LightBlue);
++void DrawFlagArray32(const std::string& name, u32& flags, Colors color = Colors::LightBlue);
++void DrawFlagArray16(const std::string& name, u16& flags, Colors color = Colors::LightBlue);
++void DrawFlagArray8(const std::string& name, u8& flags, Colors color = Colors::LightBlue);
++void DrawFlagArray8Mask(const std::string& name, u8& flags, Colors color = Colors::LightBlue);
+ bool BtnSelector(const char* label, int32_t* value, const BtnSelectorOptions& options);
+ bool CVarBtnSelector(const char* label, const char* cvarName, const BtnSelectorOptions& options);
+ 
+diff --git a/soh/soh/config/ConfigUpdaters.cpp b/soh/soh/config/ConfigUpdaters.cpp
+index 61db0038..558fc022 100644
+--- a/soh/soh/config/ConfigUpdaters.cpp
++++ b/soh/soh/config/ConfigUpdaters.cpp
+@@ -12,7 +12,6 @@ struct Migration {
+ static const Migration version3Migrations[] = {
+     { "gSwitchAge", "gGeneral.SwitchAge" },
+     { "gFrameAdvance", "gDeveloperTools.FrameAdvanceTick" },
+-    { "gRandoGenerating", "gGeneral.RandoGenerating" },
+     { "gNewSeedGenerated", "gGeneral.NewSeedGenerated" },
+     { "gOnFileSelectNameEntry", "gGeneral.OnFileSelectNameEntry" },
+     { "gBetterDebugWarpScreenMQMode", "gGeneral.BetterDebugWarpScreenMQMode" },
+diff --git a/soh/soh/mixer.c b/soh/soh/mixer.c
+index 6f5ca023..44fdaa64 100644
+--- a/soh/soh/mixer.c
++++ b/soh/soh/mixer.c
+@@ -22,6 +22,50 @@
+ #define BUF_U8(a) (rspa.buf.as_u8 + ((a)-0x3C0))
+ #define BUF_S16(a) (rspa.buf.as_s16 + ((a)-0x3C0) / sizeof(int16_t))
+ 
++#ifdef __3DS__
++// SoH-3DS: these ops read/write real RAM through pointers carried in the
++// audio command stream. Five hardware dumps form one constellation: a wild
++// audio-side write tramples a neighboring thread's Thread_tag (libctru heap
++// thread stacks have no guard pages), and the victim resumes on a garbage sp.
++// Azahar independently logs per-frame unmapped reads at these PCs (NULL and
++// one fixed stale pointer). Validate every RAM pointer against the image,
++// app heap, and linear heap; on violation log the op once per pointer and
++// skip - garbled audio for one note beats memory corruption.
++#include <stdio.h>
++extern char __end__[];
++extern uint32_t __ctru_heap, __ctru_heap_size, __ctru_linear_heap, __ctru_linear_heap_size;
++static int soh3ds_audio_ptr_ok(const void* p, uint32_t n) {
++    uint32_t a = (uint32_t)p;
++    if (a >= 0x00100000u && a + n <= (uint32_t)__end__) {
++        return 1;
++    }
++    if (a >= __ctru_heap && a + n <= __ctru_heap + __ctru_heap_size) {
++        return 1;
++    }
++    if (a >= __ctru_linear_heap && a + n <= __ctru_linear_heap + __ctru_linear_heap_size) {
++        return 1;
++    }
++    return 0;
++}
++static void soh3ds_audio_ptr_bad(const char* op, const void* p, uint32_t n) {
++    static uint32_t seen[16];
++    static int seenCount;
++    uint32_t a = (uint32_t)p;
++    for (int i = 0; i < seenCount; i++) {
++        if (seen[i] == a) {
++            return;
++        }
++    }
++    if (seenCount < 16) {
++        seen[seenCount++] = a;
++    }
++    fprintf(stderr, "audio: BAD PTR %s p=%08lx n=%lu\n", op, (unsigned long)a, (unsigned long)n);
++}
++#define SOH3DS_AUDIO_GUARD(op, p, n) (soh3ds_audio_ptr_ok((p), (n)) ? 1 : (soh3ds_audio_ptr_bad((op), (p), (n)), 0))
++#else
++#define SOH3DS_AUDIO_GUARD(op, p, n) 1
++#endif
++
+ static struct {
+     uint16_t in;
+     uint16_t out;
+@@ -97,6 +141,10 @@ void aClearBufferImpl(uint16_t addr, int nbytes) {
+ }
+ 
+ void aLoadBufferImpl(const void* source_addr, uint16_t dest_addr, uint16_t nbytes) {
++    if (!SOH3DS_AUDIO_GUARD("aLoadBuffer", source_addr, nbytes)) {
++        memset(BUF_U8(dest_addr), 0, nbytes);
++        return;
++    }
+ #if __SANITIZE_ADDRESS__
+     for (size_t i = 0; i < nbytes; i++) {
+         BUF_U8(dest_addr)[i] = ((const unsigned char*)source_addr)[i];
+@@ -133,10 +181,17 @@ void aOPUSFree(struct OggOpusFile* opusFile) {
+ }
+ 
+ void aSaveBufferImpl(uint16_t source_addr, int16_t* dest_addr, uint16_t nbytes) {
++    if (!SOH3DS_AUDIO_GUARD("aSaveBuffer", dest_addr, ROUND_DOWN_16(nbytes))) {
++        return;
++    }
+     memcpy(dest_addr, BUF_S16(source_addr), ROUND_DOWN_16(nbytes));
+ }
+ 
+ void aLoadADPCMImpl(int num_entries_times_16, const int16_t* book_source_addr) {
++    if (!SOH3DS_AUDIO_GUARD("aLoadADPCM", book_source_addr, (uint32_t)num_entries_times_16)) {
++        memset(rspa.adpcm_table, 0, sizeof(rspa.adpcm_table));
++        return;
++    }
+     memcpy(rspa.adpcm_table, book_source_addr, num_entries_times_16);
+ }
+ 
+@@ -185,12 +240,21 @@ void aADPCMdecImpl(uint8_t flags, ADPCM_STATE state) {
+     uint8_t* in = BUF_U8(rspa.in);
+     int16_t* out = BUF_S16(rspa.out);
+     int nbytes = ROUND_UP_32(rspa.nbytes);
++    // The state pointer is read here and WRITTEN 32 bytes at the end - a stale
++    // pointer is the wild-write channel; treat it as A_INIT instead.
++    int stateOk = SOH3DS_AUDIO_GUARD("aADPCMdec.state", state, 16 * sizeof(int16_t));
+     if (flags & A_INIT) {
+         memset(out, 0, 16 * sizeof(int16_t));
+     } else if (flags & A_LOOP) {
+-        memcpy(out, rspa.adpcm_loop_state, 16 * sizeof(int16_t));
+-    } else {
++        if (SOH3DS_AUDIO_GUARD("aADPCMdec.loop", rspa.adpcm_loop_state, 16 * sizeof(int16_t))) {
++            memcpy(out, rspa.adpcm_loop_state, 16 * sizeof(int16_t));
++        } else {
++            memset(out, 0, 16 * sizeof(int16_t));
++        }
++    } else if (stateOk) {
+         memcpy(out, state, 16 * sizeof(int16_t));
++    } else {
++        memset(out, 0, 16 * sizeof(int16_t));
+     }
+     out += 16;
+ 
+@@ -229,7 +293,9 @@ void aADPCMdecImpl(uint8_t flags, ADPCM_STATE state) {
+         }
+         nbytes -= 16 * sizeof(int16_t);
+     }
+-    memcpy(state, out - 16, 16 * sizeof(int16_t));
++    if (stateOk) {
++        memcpy(state, out - 16, 16 * sizeof(int16_t));
++    }
+ }
+ 
+ void aResampleImpl(uint8_t flags, uint16_t pitch, RESAMPLE_STATE state) {
+@@ -237,6 +303,14 @@ void aResampleImpl(uint8_t flags, uint16_t pitch, RESAMPLE_STATE state) {
+     int16_t* in_initial = BUF_S16(rspa.in);
+     int16_t* in = in_initial;
+     int16_t* out = BUF_S16(rspa.out);
++    int nbytesGuard = ROUND_UP_16(rspa.nbytes);
++    // Read at entry, written (state[4..5], +8..15) at exit - same wild-write
++    // channel as aADPCMdec; degrade to A_INIT on a bad pointer.
++    if (!SOH3DS_AUDIO_GUARD("aResample.state", state, 16 * sizeof(int16_t))) {
++        memset(BUF_S16(rspa.out), 0, (uint32_t)nbytesGuard);
++        return;
++    }
++    (void)nbytesGuard;
+     int nbytes = ROUND_UP_16(rspa.nbytes);
+     uint32_t pitch_accumulator;
+     int i;
+@@ -370,12 +444,20 @@ void aS8DecImpl(uint8_t flags, ADPCM_STATE state) {
+     uint8_t* in = BUF_U8(rspa.in);
+     int16_t* out = BUF_S16(rspa.out);
+     int nbytes = ROUND_UP_32(rspa.nbytes);
++    // Same state read+writeback shape as aADPCMdec - guard both directions.
++    int stateOk = SOH3DS_AUDIO_GUARD("aS8Dec.state", state, 16 * sizeof(int16_t));
+     if (flags & A_INIT) {
+         memset(out, 0, 16 * sizeof(int16_t));
+     } else if (flags & A_LOOP) {
+-        memcpy(out, rspa.adpcm_loop_state, 16 * sizeof(int16_t));
+-    } else {
++        if (SOH3DS_AUDIO_GUARD("aS8Dec.loop", rspa.adpcm_loop_state, 16 * sizeof(int16_t))) {
++            memcpy(out, rspa.adpcm_loop_state, 16 * sizeof(int16_t));
++        } else {
++            memset(out, 0, 16 * sizeof(int16_t));
++        }
++    } else if (stateOk) {
+         memcpy(out, state, 16 * sizeof(int16_t));
++    } else {
++        memset(out, 0, 16 * sizeof(int16_t));
+     }
+     out += 16;
+ 
+@@ -400,7 +482,9 @@ void aS8DecImpl(uint8_t flags, ADPCM_STATE state) {
+         nbytes -= 16 * sizeof(int16_t);
+     }
+ 
+-    memcpy(state, out - 16, 16 * sizeof(int16_t));
++    if (stateOk) {
++        memcpy(state, out - 16, 16 * sizeof(int16_t));
++    }
+ }
+ 
+ void aAddMixerImpl(uint16_t count, uint16_t in_addr, uint16_t out_addr) {
+@@ -509,6 +593,10 @@ void aInterlImpl(uint16_t in_addr, uint16_t out_addr, uint16_t n_samples) {
+ void aFilterImpl(uint8_t flags, uint16_t count_or_buf, int16_t* state_or_filter) {
+     if (flags > A_INIT) {
+         rspa.filter_count = ROUND_UP_16(count_or_buf);
++        if (!SOH3DS_AUDIO_GUARD("aFilter.coeff", state_or_filter, sizeof(rspa.filter))) {
++            memset(rspa.filter, 0, sizeof(rspa.filter));
++            return;
++        }
+         memcpy(rspa.filter, state_or_filter, sizeof(rspa.filter));
+     } else {
+         int16_t tmp[16], tmp2[8];
+@@ -529,9 +617,12 @@ void aFilterImpl(uint8_t flags, uint16_t count_or_buf, int16_t* state_or_filter)
+ #endif
+ #endif
+             memset(tmp2, 0, 8 * sizeof(int16_t));
+-        } else {
++        } else if (SOH3DS_AUDIO_GUARD("aFilter.state", state_or_filter, 16 * sizeof(int16_t))) {
+             memcpy(tmp, state_or_filter, 8 * sizeof(int16_t));
+             memcpy(tmp2, state_or_filter + 8, 8 * sizeof(int16_t));
++        } else {
++            memset(tmp, 0, 8 * sizeof(int16_t));
++            memset(tmp2, 0, 8 * sizeof(int16_t));
+         }
+ 
+         for (int i = 0; i < 8; i++) {
+@@ -553,8 +644,10 @@ void aFilterImpl(uint8_t flags, uint16_t count_or_buf, int16_t* state_or_filter)
+             count -= 8 * sizeof(int16_t);
+         } while (count > 0);
+ 
+-        memcpy(state_or_filter, tmp, 8 * sizeof(int16_t));
+-        memcpy(state_or_filter + 8, rspa.filter, 8 * sizeof(int16_t));
++        if (SOH3DS_AUDIO_GUARD("aFilter.state", state_or_filter, 16 * sizeof(int16_t))) {
++            memcpy(state_or_filter, tmp, 8 * sizeof(int16_t));
++            memcpy(state_or_filter + 8, rspa.filter, 8 * sizeof(int16_t));
++        }
+     }
+ }
+ 
+diff --git a/soh/soh/resource/importer/AudioSequenceFactory.cpp b/soh/soh/resource/importer/AudioSequenceFactory.cpp
+index 118f302e..69cdac61 100644
+--- a/soh/soh/resource/importer/AudioSequenceFactory.cpp
++++ b/soh/soh/resource/importer/AudioSequenceFactory.cpp
+@@ -32,11 +32,25 @@ ResourceFactoryBinaryAudioSequenceV2::ReadResource(std::shared_ptr<Ship::File> f
+     audioSequence->sequence.cachePolicy = reader->ReadUByte();
+ 
+     audioSequence->sequence.numFonts = reader->ReadUInt32();
++    // SoH-3DS: fonts[] is a fixed 16-byte array; a corrupt or custom sequence
++    // with a larger declared count smashed the heap during the startup
++    // precache. Read every declared byte (keep the stream in sync), store
++    // only what fits.
++    if (audioSequence->sequence.numFonts > 16) {
++        fprintf(stderr, "AudioSequence declares %u fonts, clamping to 16\n",
++                (unsigned)audioSequence->sequence.numFonts);
++    }
+     for (int32_t i = 0; i < 16; i++) {
+         audioSequence->sequence.fonts[i] = 0;
+     }
+     for (int32_t i = 0; i < static_cast<int32_t>(audioSequence->sequence.numFonts); i++) {
+-        audioSequence->sequence.fonts[i] = reader->ReadUByte();
++        uint8_t font = reader->ReadUByte();
++        if (i < 16) {
++            audioSequence->sequence.fonts[i] = font;
++        }
++    }
++    if (audioSequence->sequence.numFonts > 16) {
++        audioSequence->sequence.numFonts = 16;
+     }
+ 
+     return audioSequence;
+diff --git a/soh/soh/resource/importer/TextFactory.cpp b/soh/soh/resource/importer/TextFactory.cpp
+index af6088da..cf9f0e39 100644
+--- a/soh/soh/resource/importer/TextFactory.cpp
++++ b/soh/soh/resource/importer/TextFactory.cpp
+@@ -1,4 +1,6 @@
+ #include <tinyxml2.h>
++#include <cstdio>
++#include <malloc.h>
+ 
+ #include "soh/resource/importer/TextFactory.h"
+ #include "soh/resource/type/Text.h"
+@@ -15,6 +17,18 @@ ResourceFactoryBinaryTextV0::ReadResource(std::shared_ptr<Ship::File> file,
+     auto reader = std::get<std::shared_ptr<Ship::BinaryReader>>(file->Reader);
+ 
+     uint32_t msgCount = reader->ReadUInt32();
++#ifdef __3DS__
++    // SoH-3DS: a wrong buffer offset here yields a garbage count, and reserve()
++    // on a garbage count is an allocation failure - which stalls on this target
++    // instead of throwing. Print it before committing to the allocation.
++    {
++        struct mallinfo mi = mallinfo();
++        fprintf(stderr, "soh-3ds text: msgCount=%u used=%uKiB free=%uKiB reserving %uB\n", (unsigned)msgCount,
++                (unsigned)(mi.uordblks / 1024), (unsigned)(mi.fordblks / 1024),
++                (unsigned)(msgCount * sizeof(MessageEntry)));
++        fflush(stderr);
++    }
++#endif
+     text->messages.reserve(msgCount);
+ 
+     for (uint32_t i = 0; i < msgCount; i++) {
+diff --git a/soh/soh/resource/importer/scenecommand/SetPathwaysFactory.cpp b/soh/soh/resource/importer/scenecommand/SetPathwaysFactory.cpp
+index d7516561..8b3e1d16 100644
+--- a/soh/soh/resource/importer/scenecommand/SetPathwaysFactory.cpp
++++ b/soh/soh/resource/importer/scenecommand/SetPathwaysFactory.cpp
+@@ -18,6 +18,12 @@ std::shared_ptr<Ship::IResource> SetPathwaysFactory::ReadResource(std::shared_pt
+         std::string pathFileName = reader->ReadString();
+         auto path = std::static_pointer_cast<Path>(
+             Ship::Context::GetRawInstance()->GetResourceManager()->LoadResourceProcess(pathFileName.c_str()));
++        if (path == nullptr) {
++            // SoH-3DS: sub-load failure (heap ceiling degrades loads to null);
++            // hardware crash_dump_00000020 was this exact deref. Skip the path.
++            std::fprintf(stderr, "scene: null pathway %s, skipping\n", pathFileName.c_str());
++            continue;
++        }
+         setPathways->paths.push_back(path->GetPointer());
+         setPathways->pathFileNames.push_back(pathFileName);
+     }
+@@ -43,8 +49,12 @@ std::shared_ptr<Ship::IResource> SetPathwaysFactoryXML::ReadResource(std::shared
+             std::string pathFileName = child->Attribute("FilePath");
+             auto path = std::static_pointer_cast<Path>(
+                 Ship::Context::GetRawInstance()->GetResourceManager()->LoadResourceProcess(pathFileName.c_str()));
+-            setPathways->paths.push_back(path->GetPointer());
+-            setPathways->pathFileNames.push_back(pathFileName);
++            if (path != nullptr) {
++                setPathways->paths.push_back(path->GetPointer());
++                setPathways->pathFileNames.push_back(pathFileName);
++            } else {
++                std::fprintf(stderr, "scene: null pathway %s, skipping\n", pathFileName.c_str());
++            }
+         }
+ 
+         child = child->NextSiblingElement();
+diff --git a/soh/soh/resource/logging/SceneCommandLoggers.cpp b/soh/soh/resource/logging/SceneCommandLoggers.cpp
+index 8a464172..86672c96 100644
+--- a/soh/soh/resource/logging/SceneCommandLoggers.cpp
++++ b/soh/soh/resource/logging/SceneCommandLoggers.cpp
+@@ -103,7 +103,7 @@ void LogCameraSettingsAsXML(std::shared_ptr<Ship::IResource> resource) {
+     doc.InsertFirstChild(root);
+ 
+     root->SetAttribute("CameraMovement", setCameraSettings->settings.cameraMovement);
+-    root->SetAttribute("WorldMapArea", setCameraSettings->settings.worldMapArea);
++    root->SetAttribute("WorldMapArea", (int)setCameraSettings->settings.worldMapArea);
+ 
+     tinyxml2::XMLPrinter printer;
+     doc.Accept(&printer);
+@@ -435,7 +435,7 @@ void LogRoomBehaviorAsXML(std::shared_ptr<Ship::IResource> resource) {
+     doc.InsertFirstChild(root);
+ 
+     root->SetAttribute("GameplayFlags1", setRoomBehavior->roomBehavior.gameplayFlags);
+-    root->SetAttribute("GameplayFlags2", setRoomBehavior->roomBehavior.gameplayFlags2);
++    root->SetAttribute("GameplayFlags2", (int)setRoomBehavior->roomBehavior.gameplayFlags2);
+ 
+     tinyxml2::XMLPrinter printer;
+     doc.Accept(&printer);
+diff --git a/soh/soh/stubs.c b/soh/soh/stubs.c
+index 2b0323c3..08920154 100644
+--- a/soh/soh/stubs.c
++++ b/soh/soh/stubs.c
+@@ -51,8 +51,11 @@ OSPri osGetThreadPri(OSThread* thread) {
+ void osSetThreadPri(OSThread* thread, OSPri pri) {
+ }
+ 
++// SoH-3DS: libultraship provides this one; two definitions collide.
++#ifndef __3DS__
+ void osCreatePiManager(OSPri pri, OSMesgQueue* cmdQ, OSMesg* cmdBuf, s32 cmdMsgCnt) {
+ }
++#endif
+ 
+ s32 osPfsFreeBlocks(OSPfs* pfs, s32* leftoverBytes) {
+     return 0;
+@@ -122,11 +125,17 @@ void osStopThread(OSThread* thread) {
+ void osDestroyThread(OSThread* thread) {
+ }
+ 
++// SoH-3DS: libultraship provides this one; two definitions collide.
++#ifndef __3DS__
+ void osWritebackDCache(void* vaddr, s32 nbytes) {
+ }
++#endif
+ 
++// SoH-3DS: libultraship provides this one; two definitions collide.
++#ifndef __3DS__
+ void osInvalICache(void* vaddr, s32 nbytes) {
+ }
++#endif
+ 
+ s32 osContStartQuery(OSMesgQueue* mq) {
+     return 0;
+@@ -209,11 +218,17 @@ s32 osAiSetFrequency(u32 freq) {
+     return 32006;
+ }
+ 
++// SoH-3DS: libultraship provides this one; two definitions collide.
++#ifndef __3DS__
+ void osInvalDCache(void* vaddr, s32 nbytes) {
+ }
++#endif
+ 
++// SoH-3DS: libultraship provides this one; two definitions collide.
++#ifndef __3DS__
+ void osWritebackDCacheAll(void) {
+ }
++#endif
+ 
+ void Audio_SetBGM(u32 bgmId) {
+ }
+diff --git a/soh/soh/z_message_OTR.cpp b/soh/soh/z_message_OTR.cpp
+index 1d2a70cf..4c5f220f 100644
+--- a/soh/soh/z_message_OTR.cpp
++++ b/soh/soh/z_message_OTR.cpp
+@@ -1,5 +1,6 @@
+ #include <ship/Context.h>
+ #include <ship/resource/ResourceManager.h>
++#include <spdlog/spdlog.h>
+ 
+ #include "soh/resource/type/Text.h"
+ 
+@@ -27,6 +28,12 @@ static void OTRMessage_LoadCustom(const std::string& folderPath, MessageTableEnt
+     for (auto& tPath : lst) {
+         auto file = std::static_pointer_cast<SOH::Text>(
+             Ship::Context::GetRawInstance()->GetResourceManager()->LoadResource(tPath));
++        if (file == nullptr) {
++            // SoH-3DS: load failures degrade to null (heap ceiling); same
++            // predicted-deref class as crash_dump_00000020.
++            std::fprintf(stderr, "msg: null override %s, skipping\n", tPath.c_str());
++            continue;
++        }
+ 
+         for (size_t j = 0; j < file->messages.size(); ++j) {
+             // Check if same text ID exists already
+@@ -42,9 +49,17 @@ static void OTRMessage_LoadCustom(const std::string& folderPath, MessageTableEnt
+     }
+ }
+ 
++#ifdef __3DS__
++#define MSG3DS_TRACE(...) (fprintf(stderr, "soh-3ds msg: " __VA_ARGS__), fputc('\n', stderr))
++#else
++#define MSG3DS_TRACE(...) ((void)0)
++#endif
++
+ MessageTableEntry* OTRMessage_LoadTable(const std::string& filePath, bool isNES) {
++    MSG3DS_TRACE("LoadTable %s: load", filePath.c_str());
+     auto file = std::static_pointer_cast<SOH::Text>(
+         Ship::Context::GetRawInstance()->GetResourceManager()->LoadResource(filePath));
++    MSG3DS_TRACE("LoadTable %s: loaded (%s)", filePath.c_str(), file == nullptr ? "null" : "ok");
+ 
+     if (file == nullptr)
+         return nullptr;
+@@ -52,7 +67,11 @@ MessageTableEntry* OTRMessage_LoadTable(const std::string& filePath, bool isNES)
+     // Allocate room for an additional message
+     // OTRTODO: Should not be malloc'ing here. It's fine for now since we check elsewhere that the message table is
+     // already null.
+-    MessageTableEntry* table = (MessageTableEntry*)malloc(sizeof(MessageTableEntry) * file->messages.size());
++    // SoH-3DS: the comment promised the extra slot but the malloc never had it,
++    // while LoadCustom below searches messages.size() + 1 entries - a one-entry
++    // heap overread, and a 16-byte overwrite if the garbage matched an id.
++    MessageTableEntry* table = (MessageTableEntry*)malloc(sizeof(MessageTableEntry) * (file->messages.size() + 1));
++    memset(&table[file->messages.size()], 0, sizeof(MessageTableEntry));
+ 
+     for (size_t i = 0; i < file->messages.size(); i++) {
+         SetMessageEntry(table[i], file->messages[i]);
+@@ -60,8 +79,10 @@ MessageTableEntry* OTRMessage_LoadTable(const std::string& filePath, bool isNES)
+         if (isNES && file->messages[i].id == 0xFFFC)
+             _message_0xFFFC_nes = (char*)file->messages[i].msg.c_str();
+     }
++    MSG3DS_TRACE("LoadTable %s: entries copied, wildcard override next", filePath.c_str());
+     OTRMessage_LoadCustom("override/" + filePath.substr(0, filePath.find_last_of('/')) + "/*", table,
+                           file->messages.size() + 1);
++    MSG3DS_TRACE("LoadTable %s: override done", filePath.c_str());
+ 
+     // Assert that the first message starts at the first text ID
+     assert(table[0].textId == 0x0001);
+@@ -96,6 +117,15 @@ extern "C" void OTRMessage_Init() {
+         auto file2 =
+             std::static_pointer_cast<SOH::Text>(Ship::Context::GetRawInstance()->GetResourceManager()->LoadResource(
+                 "text/staff_message_data_static/staff_message_data_static"));
++        // SoH-3DS: with no archives mounted (e.g. oot.o2r unresolved) this
++        // resource is null and the deref below was the first boot crash a
++        // broken asset path produced - a mystery data abort instead of a
++        // diagnosable failure. Fail loudly and skip staff credits text.
++        if (file2 == nullptr) {
++            SPDLOG_ERROR("OTRMessage_Init: staff_message_data_static missing - are the .o2r archives mounted?");
++            fprintf(stderr, "soh-3ds msg: staff message table missing; skipping (no archives?)\n");
++            return;
++        }
+         // OTRTODO: Should not be malloc'ing here. It's fine for now since we check that the message table is already
+         // null.
+         sStaffMessageEntryTablePtr = (MessageTableEntry*)malloc(sizeof(MessageTableEntry) * file2->messages.size());
+diff --git a/soh/soh/z_play_otr.cpp b/soh/soh/z_play_otr.cpp
+index a9537cea..af5bab5b 100644
+--- a/soh/soh/z_play_otr.cpp
++++ b/soh/soh/z_play_otr.cpp
+@@ -1,6 +1,14 @@
+ #include <ship/Context.h>
+ #include <ship/resource/ResourceManager.h>
+ #include <ship/utils/StringHelper.h>
++#ifdef __3DS__
++#include <ship/resource/archive/ArchiveManager.h>
++#include <fast/resource/ResourceType.h>
++#include <fast/resource/type/Texture.h>
++#include <malloc.h>
++// OTRGlobals.h only exposes this to C translation units.
++extern "C" void Gfx_TextureCacheDelete(const uint8_t* addr);
++#endif
+ #include <spdlog/spdlog.h>
+ 
+ #include "ResourceManagerHelpers.h"
+@@ -23,7 +31,75 @@ Ship::IResource* OTRPlay_LoadFile(PlayState* play, const char* fileName) {
+     return res.get();
+ }
+ 
++#ifdef __3DS__
++// SoH-3DS: recorded-object-set eviction, the MK64-3DS pattern (its LoadTrack
++// records the track's directories; the CM_CleanWorld boundary releases that
++// exact set - never a global sweep, which regressed when we tried it).
++// Play_Destroy records the departing scene's object bank here; the eviction
++// seam below releases those directories, minus the always-loaded keeps and
++// Link objects (also MK64's exceptions: pinned, and the cosmetics-patch hot
++// spots). The incoming scene lazily reloads anything it shares.
++#define DEFINE_OBJECT(name, enum_) #name,
++#define DEFINE_OBJECT_NULL(name, enum_) "",
++#define DEFINE_OBJECT_UNSET(enum_) "",
++static const char* const sSoh3dsObjectDirNames[] = {
++#include "tables/object_table.h"
++};
++#undef DEFINE_OBJECT
++#undef DEFINE_OBJECT_NULL
++#undef DEFINE_OBJECT_UNSET
++
++static s16 sSoh3dsDepartingObjects[35];
++static s32 sSoh3dsDepartingObjectCount = 0;
++
++extern "C" void Soh3dsRecordDepartingObjects(const s16* ids, s32 count) {
++    if (count > (s32)(sizeof(sSoh3dsDepartingObjects) / sizeof(sSoh3dsDepartingObjects[0]))) {
++        count = (s32)(sizeof(sSoh3dsDepartingObjects) / sizeof(sSoh3dsDepartingObjects[0]));
++    }
++    for (s32 i = 0; i < count; i++) {
++        sSoh3dsDepartingObjects[i] = ids[i];
++    }
++    sSoh3dsDepartingObjectCount = count;
++}
++#endif
++
++// SoH-3DS: lets the framebuffer dumper label each capture with the scene it
++// actually rendered, by NAME. A numeric id already caused one capture to be
++// analysed as the wrong room (entrance 0xC1 was expected to be the Kokiri
++// shop; the game was actually in scene 1, Dodongo's Cavern).
++static const char* sSoh3dsCurrentScene = "none";
++extern "C" const char* Soh3dsCurrentSceneName(void) {
++    return sSoh3dsCurrentScene;
++}
++
+ extern "C" void OTRPlay_SpawnScene(PlayState* play, s32 sceneId, s32 spawn) {
++#ifdef __3DS__
++    // SoH-3DS DEV: force a scene by ID from sdmc:/3ds/soh/warpto.txt (hex,
++    // e.g. "2D" = Kokiri shop). Overriding the ENTRANCE index is unreliable
++    // on a randomizer save - entrance shuffle sent 0xC1 (nominally the
++    // Kokiri shop) to Dodongo's Cavern. Forcing the scene id bypasses the
++    // entrance table completely. Absent file = normal play.
++    {
++        static s32 sForceScene = -2;
++        if (sForceScene == -2) {
++            sForceScene = -1;
++            FILE* wf = fopen("warpto.txt", "r");
++            if (wf != NULL) {
++                unsigned v = 0;
++                if (fscanf(wf, "%x", &v) == 1 && v < SCENE_ID_MAX) {
++                    sForceScene = (s32)v;
++                }
++                fclose(wf);
++            }
++        }
++        if (sForceScene >= 0) {
++            fprintf(stderr, "gfx-dev: forcing scene 0x%X (was 0x%X)\n", (unsigned)sForceScene, (unsigned)sceneId);
++            sceneId = sForceScene;
++            spawn = 0;
++        }
++    }
++#endif
++    sSoh3dsCurrentScene = gSceneTable[sceneId].sceneFile.fileName;
+     SceneTableEntry* scene = &gSceneTable[sceneId];
+ 
+     scene->unk_13 = 0;
+@@ -44,6 +120,120 @@ extern "C" void OTRPlay_SpawnScene(PlayState* play, s32 sceneId, s32 spawn) {
+     std::string scenePath = StringHelper::Sprintf("scenes/%s/%s/%s", sceneVersion.c_str(), scene->sceneFile.fileName,
+                                                   scene->sceneFile.fileName);
+ 
++#ifdef __3DS__
++    // SoH-3DS: the resource cache has no eviction, so the 66 MB heap climbs to
++    // its ceiling within minutes of scene churn and dies of bad_alloc - the
++    // dominant crash on hardware and emulator (279 absorbed ceiling events in
++    // one measured session before the fatal one). v1 evicts the ENTIRE
++    // departing scene directory (scene + rooms + their textures) here:
++    //  - Play_SpawnScene's only callers are Play_Init (fresh PlayState; the
++    //    previous gamestate - the sole C-side holder of raw pointers into the
++    //    departing scene's payloads - was destroyed by GameState_Destroy
++    //    before Play_Init ran) and the failed-load fallback recursion;
++    //    play->sceneSegment is assigned AFTER this block;
++    //  - belt-and-braces: if this play arrives with a live sceneSegment (a
++    //    reused PlayState - no known path, but the hazard if one appears),
++    //    eviction is skipped outright;
++    //  - textures get Gfx_TextureCacheDelete first (GPU copies + raw-address
++    //    cache keys); the GPU itself never reads resource memory (uploads
++    //    copy into C3D_Tex; retired-texture machinery covers those);
++    //  - bulk UnloadResources handles .meta aliases correctly;
++    //  - same-scene respawns skip; audio/text/fonts live outside scenes/ and
++    //    are untouched; objects are released ONLY from the recorded departing
++    //    set (pass 3), never swept.
++    //  DEFAULT ON (kill switch: gSceneEvict=0). Soak record, 420 s each:
++    //    v1 scenes-only validated twice (zero null loads/faults, ceiling
++    //    death pushed to ~frame 3120); v2 global objects sweep REVERTED
++    //    (regressed); v2b recorded-set survived to frame 8820 with 649 KiB
++    //    reclaims per transition and zero live faults (the post-FATAL
++    //    unmapped storm is teardown debris, dumps-18/19 class).
++    if (CVarGetInteger("gSceneEvict", 1) && play->sceneSegment == NULL) {
++        static std::string sPrevSceneDir;
++        std::string newSceneDir = StringHelper::Sprintf("scenes/%s/%s/*", sceneVersion.c_str(),
++                                                        scene->sceneFile.fileName);
++        if (!sPrevSceneDir.empty() && sPrevSceneDir != newSceneDir) {
++            auto resMgr = Ship::Context::GetRawInstance()->GetResourceManager();
++            struct mallinfo miBefore = mallinfo();
++            auto files = resMgr->GetArchiveManager()->ListFiles(sPrevSceneDir);
++            if (files != nullptr) {
++                // Pass 1: GPU-side texture teardown (stale-key removal).
++                for (const auto& f : *files) {
++                    auto res = resMgr->GetCachedResource(f);
++                    if (res == nullptr ||
++                        res->GetInitData()->Type != static_cast<uint32_t>(Fast::ResourceType::Texture)) {
++                        continue;
++                    }
++                    auto tex = std::static_pointer_cast<Fast::Texture>(res);
++                    if (tex->ImageData != nullptr) {
++                        Gfx_TextureCacheDelete(tex->ImageData);
++                    }
++                }
++            }
++            // Pass 2: bulk eviction of the whole scene directory (alias-aware).
++            resMgr->UnloadResources(sPrevSceneDir);
++            // Pass 3 (v2b): release the RECORDED departing-object set (see the
++            // block above OTRPlay_SpawnScene). A global objects/* sweep was
++            // tried and regressed (died earlier than baseline, unattributed);
++            // this releases only the ~dozen directories the departing scene's
++            // object bank actually declared, minus keeps and Link objects.
++            // Liveness guard: UnloadResources erases cache entries
++            // unconditionally, so any file still owned outside the cache
++            // (use_count > 2: the cache line + our probe copy is the
++            // baseline) pins its WHOLE directory for this transition -
++            // preserving the alias-correct bulk unload for clean dirs and
++            // making pins observable (logged) instead of assumed absent.
++            {
++                constexpr size_t kObjectNameCount = sizeof(sSoh3dsObjectDirNames) / sizeof(sSoh3dsObjectDirNames[0]);
++                for (s32 i = 0; i < sSoh3dsDepartingObjectCount; i++) {
++                    s16 id = sSoh3dsDepartingObjects[i];
++                    if (id <= 0 || (size_t)id >= kObjectNameCount) {
++                        continue;
++                    }
++                    const char* name = sSoh3dsObjectDirNames[id];
++                    if (name[0] == '\0' || strncmp(name, "gameplay_", 9) == 0 ||
++                        strncmp(name, "object_link_", 12) == 0) {
++                        continue;
++                    }
++                    std::string objDir = StringHelper::Sprintf("objects/%s/*", name);
++                    auto objFiles = resMgr->GetArchiveManager()->ListFiles(objDir);
++                    if (objFiles == nullptr) {
++                        continue;
++                    }
++                    long pinned = 0;
++                    for (const auto& f : *objFiles) {
++                        auto res = resMgr->GetCachedResource(f);
++                        if (res != nullptr && res.use_count() > 2) {
++                            pinned++;
++                        }
++                    }
++                    if (pinned != 0) {
++                        fprintf(stderr, "soh-3ds evict: PINNED objects/%s (%ld pinned resources), skipped\n", name,
++                                pinned);
++                        continue;
++                    }
++                    for (const auto& f : *objFiles) {
++                        auto res = resMgr->GetCachedResource(f);
++                        if (res != nullptr &&
++                            res->GetInitData()->Type == static_cast<uint32_t>(Fast::ResourceType::Texture)) {
++                            auto tex = std::static_pointer_cast<Fast::Texture>(res);
++                            if (tex->ImageData != nullptr) {
++                                Gfx_TextureCacheDelete(tex->ImageData);
++                            }
++                        }
++                    }
++                    resMgr->UnloadResources(objDir);
++                }
++                sSoh3dsDepartingObjectCount = 0;
++            }
++            struct mallinfo miAfter = mallinfo();
++            fprintf(stderr, "soh-3ds evict: %s reclaimed %d KiB (heap %u -> %u KiB)\n", sPrevSceneDir.c_str(),
++                    (int)(((long)miBefore.uordblks - (long)miAfter.uordblks) / 1024),
++                    (unsigned)(miBefore.uordblks / 1024), (unsigned)(miAfter.uordblks / 1024));
++        }
++        sPrevSceneDir = newSceneDir;
++    }
++#endif
++
+     play->sceneSegment = OTRPlay_LoadFile(play, scenePath.c_str());
+ 
+     // Failed to load scene... default to doodongs cavern
+diff --git a/soh/soh/z_scene_otr.cpp b/soh/soh/z_scene_otr.cpp
+index 72e2f063..aa98d160 100644
+--- a/soh/soh/z_scene_otr.cpp
++++ b/soh/soh/z_scene_otr.cpp
+@@ -503,9 +503,8 @@ extern "C" s32 OTRRoom_RequestNewRoom(PlayState* play, RoomContext* roomCtx, s32
+ 
+         assert(roomNum < play->numRooms);
+ 
+-        if (roomNum >= play->numRooms)
+-            return 0; // UH OH
+-
++        if (roomNum < 0 || roomNum >= play->numRooms)
++            return 0; // UH OH (SoH-3DS: also reject negative - roomList[-1])
+         size = static_cast<u32>(play->roomList[roomNum].vromEnd - play->roomList[roomNum].vromStart);
+         roomCtx->unk_34 = (void*)ALIGN16((uintptr_t)roomCtx->bufPtrs[roomCtx->activeBufPage] -
+                                          ((size + 8) * roomCtx->activeBufPage + 7));
+@@ -516,6 +515,16 @@ extern "C" s32 OTRRoom_RequestNewRoom(PlayState* play, RoomContext* roomCtx, s32
+ 
+         auto roomData = std::static_pointer_cast<SOH::Scene>(
+             ResourceMgr_GetResourceByNameHandlingMQ(play->roomList[roomNum].fileName));
++        if (roomData == nullptr) {
++            // SoH-3DS: load failure (heap ceiling - LoadResource degrades to
++            // null instead of terminating). Keep the previous room and report;
++            // a stalled transition beats a null roomToLoad deref downstream.
++            std::fprintf(stderr, "room: load failed for %s, keeping previous room\n",
++                         play->roomList[roomNum].fileName);
++            roomCtx->curRoom = roomCtx->prevRoom;
++            roomCtx->status = 0;
++            return 0;
++        }
+         roomCtx->status = 1;
+         roomCtx->roomToLoad = roomData.get();
+ 
+diff --git a/soh/src/boot/z_std_dma.c b/soh/src/boot/z_std_dma.c
+index 6393ae27..faafc3b3 100644
+--- a/soh/src/boot/z_std_dma.c
++++ b/soh/src/boot/z_std_dma.c
+@@ -358,7 +358,14 @@ s32 DmaMgr_SendRequestImpl(DmaRequest* req, uintptr_t ram, uintptr_t vrom, size_
+         }
+     }
+ 
+-    osSendMesgPtr(&sDmaMgrMsgQueue, req, OS_MESG_BLOCK);
++    // SoH-3DS: do NOT enqueue. DmaMgr_ThreadEntry never runs on this port
++    // (osCreateThread is a no-op), so the original enqueue NEVER copied data
++    // either - it parked up to 0x20 dangling stack-frame pointers in a global
++    // queue (a poisoned-write hazard) and then dropped requests once full.
++    // Callers still work because SoH links overlays statically: Overlay_Load's
++    // reads hit the real linked data, not this never-performed DMA. This stub
++    // is the original's steady-state behavior minus the dangling pointers.
++    (void)sDmaMgrQueueFullLogged;
+     return 0;
+ }
+ 
+diff --git a/soh/src/code/audio_heap.c b/soh/src/code/audio_heap.c
+index a6f2dae1..c12284cb 100644
+--- a/soh/src/code/audio_heap.c
++++ b/soh/src/code/audio_heap.c
+@@ -1204,6 +1204,13 @@ void AudioHeap_DiscardSampleCacheEntry(SampleCacheEntry* entry) {
+     s32 sampleBankId2;
+     s32 fontId;
+ 
++    // SoH-3DS: soundFontTable is NULL on this port (its init is commented
++    // out in AudioLoad_Init); the temp-sample-cache wrap path reached this
++    // deref via custom-audio slow loads. gAudioContext.soundFonts is also
++    // never initialized here, so there is nothing to unapply - bail.
++    if (gAudioContext.soundFontTable == NULL) {
++        return;
++    }
+     numFonts = gAudioContext.soundFontTable->numEntries;
+     for (fontId = 0; fontId < numFonts; fontId++) {
+         sampleBankId1 = gAudioContext.soundFonts[fontId].sampleBankId1;
+diff --git a/soh/src/code/audio_load.c b/soh/src/code/audio_load.c
+index 239e312f..e0aa00f7 100644
+--- a/soh/src/code/audio_load.c
++++ b/soh/src/code/audio_load.c
+@@ -126,7 +126,13 @@ void AudioLoad_DecreaseSampleDmaTtls(void) {
+     gAudioContext.unused2628 = 0;
+ }
+ 
+-uintptr_t AudioLoad_DmaSampleData(uintptr_t devAddr, size_t size, s32 arg2, u8* dmaIndexRef, s32 medium) {
++// SoH-3DS: maxBytes = bytes actually available from devAddr to the end of the
++// backing sample buffer. The fresh-DMA path used to transfer the full DMA
++// buffer length regardless, reading past the sample's C++ heap allocation
++// (the osPiStartDma clamp is not wired on this port, so this memcpy is the
++// only bound).
++uintptr_t AudioLoad_DmaSampleData(uintptr_t devAddr, size_t size, s32 arg2, u8* dmaIndexRef, s32 medium,
++                                  size_t maxBytes) {
+     s32 pad1;
+     SampleDma* dma;
+     s32 hasDma = false;
+@@ -141,7 +147,11 @@ uintptr_t AudioLoad_DmaSampleData(uintptr_t devAddr, size_t size, s32 arg2, u8*
+         for (i = gAudioContext.sampleDmaListSize1; i < gAudioContext.sampleDmaCount; i++) {
+             dma = &gAudioContext.sampleDmas[i];
+             bufferPos = devAddr - dma->devAddr;
+-            if (0 <= bufferPos && (u32)bufferPos <= dma->size - size) {
++            // Validate reuse against the bytes actually LOADED (sizeUnused =
++            // last transfer, 0 when never loaded), not buffer capacity: a
++            // clamped tail transfer leaves the rest of the buffer stale.
++            // Sum form avoids the old unsigned-underflow when size > loaded.
++            if (0 <= bufferPos && (u32)bufferPos + size <= dma->sizeUnused) {
+                 // We already have a DMA request for this memory range.
+                 if (dma->ttl == 0 &&
+                     gAudioContext.sampleDmaReuseQueue2RdPos != gAudioContext.sampleDmaReuseQueue2WrPos) {
+@@ -179,7 +189,7 @@ uintptr_t AudioLoad_DmaSampleData(uintptr_t devAddr, size_t size, s32 arg2, u8*
+         i = 0;
+     again:
+         bufferPos = devAddr - dma->devAddr;
+-        if (0 <= bufferPos && (u32)bufferPos <= dma->size - size) {
++        if (0 <= bufferPos && (u32)bufferPos + size <= dma->sizeUnused) {
+             // We already have DMA for this memory range.
+             if (dma->ttl == 0) {
+                 // Move the DMA out of the reuse queue, by swapping it with the
+@@ -213,6 +223,13 @@ uintptr_t AudioLoad_DmaSampleData(uintptr_t devAddr, size_t size, s32 arg2, u8*
+     }
+ 
+     transfer = dma->size;
++    {
++        // Available bytes measured from the aligned-down start address.
++        size_t avail = maxBytes + (devAddr - (devAddr & ~0xF));
++        if (transfer > avail) {
++            transfer = (u32)avail;
++        }
++    }
+     dmaDevAddr = devAddr & ~0xF;
+     dma->ttl = 3;
+     dma->devAddr = dmaDevAddr;
+@@ -312,6 +329,23 @@ s32 AudioLoad_IsFontLoadComplete(s32 fontId) {
+     return gAudioContext.fontLoadStatus[fontId] >= 2;
+ }
+ 
++// SoH-3DS: single choke point for fontMap lookups. fontIds come straight from
++// sequence resource data (seqData2.fonts[i]) and SAF custom ids exceed the
++// table (the bounds fix above proves they occur); an in-range slot can also
++// be a calloc'd NULL (fntIndex gaps). Every consumer of fontMap[] MUST route
++// through this and handle NULL; the old direct indexing read past the array
++// and fed std::string(NULL).
++char* AudioLoad_FontName(s32 fontId) {
++    // Same ID-domain conversion as AudioLoad_IsFontLoadComplete (identity for
++    // FONT_TABLE today, kept for parity).
++    fontId = (s32)AudioLoad_GetRealTableIndex(FONT_TABLE, (u32)fontId);
++    if (fontId < 0 || (size_t)fontId >= fontMapSize) {
++        return NULL;
++    }
++    // May still be NULL: fntIndex gaps leave calloc'd slots unset.
++    return fontMap[fontId];
++}
++
+ s32 AudioLoad_IsSeqLoadComplete(s32 seqId) {
+     if (seqId == 0xFF) {
+         return true;
+@@ -343,13 +377,21 @@ void AudioLoad_SetFontLoadStatus(s32 fontId, s32 status) {
+ }
+ 
+ void AudioLoad_SetSeqLoadStatus(s32 seqId, s32 status) {
+-    if ((seqId != 0xFF) && (gAudioContext.seqLoadStatus[seqId] != 5)) {
++    // SoH-3DS: bound like the font sibling above - seqLoadStatus is sized
++    // sequenceMapSize + 0xF; a raw out-of-range id must not write past it.
++    if ((seqId != 0xFF) && (size_t)seqId < sequenceMapSize + 0xF && (gAudioContext.seqLoadStatus[seqId] != 5)) {
+         gAudioContext.seqLoadStatus[seqId] = status;
+     }
+ }
+ 
+ void AudioLoad_SetSampleFontLoadStatusAndApplyCaches(s32 sampleBankId, s32 status) {
+-    if (sampleBankId != 0xFF) {
++    // SoH-3DS: sampleFontLoadStatus is a fixed 0x30-entry array indexed by a
++    // file-provided bank id, and the pointer fields that follow it in
++    // AudioContext are exactly what an OOB one-byte status write corrupts -
++    // after which every later status update is a repeated wild write at a
++    // stable garbage address (the observed hardware crash signature). Bound
++    // it like the SoH-patched SetFontLoadStatus above.
++    if (sampleBankId != 0xFF && (size_t)sampleBankId < ARRAY_COUNT(gAudioContext.sampleFontLoadStatus)) {
+         if (gAudioContext.sampleFontLoadStatus[sampleBankId] != 5) {
+             gAudioContext.sampleFontLoadStatus[sampleBankId] = status;
+         }
+@@ -362,7 +404,8 @@ void AudioLoad_SetSampleFontLoadStatusAndApplyCaches(s32 sampleBankId, s32 statu
+ }
+ 
+ void AudioLoad_SetSampleFontLoadStatus(s32 sampleBankId, s32 status) {
+-    if ((sampleBankId != 0xFF) && (gAudioContext.sampleFontLoadStatus[sampleBankId] != 5)) {
++    if ((sampleBankId != 0xFF) && (size_t)sampleBankId < ARRAY_COUNT(gAudioContext.sampleFontLoadStatus) &&
++        (gAudioContext.sampleFontLoadStatus[sampleBankId] != 5)) {
+         gAudioContext.sampleFontLoadStatus[sampleBankId] = status;
+     }
+ }
+@@ -692,7 +735,12 @@ SoundFontData* AudioLoad_SyncLoadFont(u32 fontId) {
+         return NULL;
+     }
+ 
+-    SoundFont* sf = ResourceMgr_LoadAudioSoundFontByName(fontMap[fontId]);
++    SoundFont* sf = ResourceMgr_LoadAudioSoundFontByName(AudioLoad_FontName(fontId));
++
++    if (sf == NULL) {
++        // Out-of-table or unset SAF fontId - nothing to load.
++        return NULL;
++    }
+ 
+     sampleBankId1 = sf->sampleBankId1;
+     sampleBankId2 = sf->sampleBankId2;
+@@ -750,7 +798,11 @@ uintptr_t AudioLoad_SyncLoad(u32 tableType, u32 id, s32* didAllocate) {
+             cachePolicy = sData.cachePolicy;
+             romAddr = 0;
+         } else if (tableType == FONT_TABLE) {
+-            fnt = ResourceMgr_LoadAudioSoundFontByName(fontMap[id]);
++            fnt = ResourceMgr_LoadAudioSoundFontByName(AudioLoad_FontName(id));
++            if (fnt == NULL) {
++                // Out-of-table or unset SAF fontId - fail like an alloc miss.
++                return NULL;
++            }
+             size = sizeof(SoundFont);
+             medium = 2;
+             cachePolicy = 0;
+@@ -1350,8 +1402,18 @@ void AudioLoad_Init(void* heap, size_t heapSize) {
+     memset(gAudioContext.seqLoadStatus, 5, sequenceMapSize + 0xF);
+     for (size_t i = 0; i < seqListSize; i++) {
+         SequenceData sDat = ResourceMgr_LoadSeqByName(seqList[i]);
++        // SoH-3DS: seqNumber comes from resource data; an out-of-range id
++        // wrote a heap pointer at an arbitrary offset (sequenceMap) and a
++        // byte into the fixed seqCachePolicyMap. Skip bad entries.
++        if ((size_t)sDat.seqNumber >= sequenceMapSize + 0xF) {
++            fprintf(stderr, "audio init: sequence %s declares out-of-range seqNumber %d, skipped\n", seqList[i],
++                    sDat.seqNumber);
++            continue;
++        }
+         sequenceMap[sDat.seqNumber] = strdup(seqList[i]);
+-        seqCachePolicyMap[sDat.seqNumber] = sDat.cachePolicy;
++        if (sDat.seqNumber < MAX_AUTHENTIC_SEQID) {
++            seqCachePolicyMap[sDat.seqNumber] = sDat.cachePolicy;
++        }
+     }
+ 
+     for (int i = 0; i < seqListSize; i++) {
+@@ -1371,6 +1433,13 @@ void AudioLoad_Init(void* heap, size_t heapSize) {
+     fontMapSize = customFntListSize + fntListSize;
+     for (int i = 0; i < fntListSize; i++) {
+         SoundFont* sf = ResourceMgr_LoadAudioSoundFontByName(fntList[i]);
++        // SoH-3DS: fntIndex comes from resource data; unchecked it wrote a
++        // pointer at an arbitrary heap offset. A failed font load (sf NULL)
++        // previously deref'd here too.
++        if (sf == NULL || sf->fntIndex < 0 || (size_t)sf->fntIndex >= fontMapSize) {
++            fprintf(stderr, "audio init: font %s unloadable or out-of-range fntIndex, skipped\n", fntList[i]);
++            continue;
++        }
+         fontMap[sf->fntIndex] = strdup(fntList[i]);
+     }
+ 
+@@ -1382,6 +1451,10 @@ void AudioLoad_Init(void* heap, size_t heapSize) {
+     int customFontStart = fntListSize;
+     for (int i = customFontStart; i < customFntListSize + fntListSize; i++) {
+         SoundFont* sf = ResourceMgr_LoadAudioSoundFontByName(customFntList[i - customFontStart]);
++        if (sf == NULL) {
++            fprintf(stderr, "audio init: custom font %s unloadable, skipped\n", customFntList[i - customFontStart]);
++            continue;
++        }
+         sf->fntIndex = i;
+         fontMap[i] = strdup(customFntList[i - customFontStart]);
+     }
+@@ -2126,7 +2199,11 @@ void AudioLoad_PreloadSamplesForFont(s32 fontId, s32 async, RelocInfo* relocInfo
+ 
+     gAudioContext.numUsedSamples = 0;
+ 
+-    SoundFont* sf = ResourceMgr_LoadAudioSoundFontByName(fontMap[fontId]);
++    SoundFont* sf = ResourceMgr_LoadAudioSoundFontByName(AudioLoad_FontName(fontId));
++
++    if (sf == NULL) {
++        return;
++    }
+ 
+     numDrums = sf->numDrums;
+     numInstruments = sf->numInstruments;
+@@ -2255,7 +2332,10 @@ void AudioLoad_LoadPermanentSamples(void) {
+             fontId = AudioLoad_GetRealTableIndex(FONT_TABLE, gAudioContext.permanentCache[i].id);
+             // fontId = gAudioContext.permanentCache[i].id;
+ 
+-            SoundFont* sf = ResourceMgr_LoadAudioSoundFontByName(fontMap[fontId]);
++            SoundFont* sf = ResourceMgr_LoadAudioSoundFontByName(AudioLoad_FontName(fontId));
++            if (sf == NULL) {
++                continue;
++            }
+             relocInfo.sampleBankId1 = sf->sampleBankId1;
+             relocInfo.sampleBankId2 = sf->sampleBankId2;
+ 
+diff --git a/soh/src/code/audio_playback.c b/soh/src/code/audio_playback.c
+index ce6c5d6f..1b175bff 100644
+--- a/soh/src/code/audio_playback.c
++++ b/soh/src/code/audio_playback.c
+@@ -336,7 +336,13 @@ Instrument* Audio_GetInstrumentInner(s32 fontId, s32 instId) {
+     }
+ 
+     int instCnt = 0;
+-    SoundFont* sf = ResourceMgr_LoadAudioSoundFontByName(fontMap[fontId]);
++    extern char* AudioLoad_FontName(s32 fontId);
++    SoundFont* sf = ResourceMgr_LoadAudioSoundFontByName(AudioLoad_FontName(fontId));
++
++    if (sf == NULL) {
++        gAudioContext.audioErrorFlags = fontId + 0x10000000;
++        return NULL;
++    }
+ 
+     if (instId >= sf->numInstruments)
+         return NULL;
+@@ -363,7 +369,12 @@ Drum* Audio_GetDrum(s32 fontId, s32 drumId) {
+         return NULL;
+     }
+ 
+-    SoundFont* sf = ResourceMgr_LoadAudioSoundFontByName(fontMap[fontId]);
++    extern char* AudioLoad_FontName(s32 fontId);
++    SoundFont* sf = ResourceMgr_LoadAudioSoundFontByName(AudioLoad_FontName(fontId));
++    if (sf == NULL) {
++        gAudioContext.audioErrorFlags = fontId + 0x10000000;
++        return NULL;
++    }
+     if (drumId < sf->numDrums) {
+         drum = sf->drums[drumId];
+     }
+@@ -387,7 +398,12 @@ SoundFontSound* Audio_GetSfx(s32 fontId, s32 sfxId) {
+         return NULL;
+     }
+ 
+-    SoundFont* sf = ResourceMgr_LoadAudioSoundFontByName(fontMap[fontId]);
++    extern char* AudioLoad_FontName(s32 fontId);
++    SoundFont* sf = ResourceMgr_LoadAudioSoundFontByName(AudioLoad_FontName(fontId));
++    if (sf == NULL) {
++        gAudioContext.audioErrorFlags = fontId + 0x10000000;
++        return NULL;
++    }
+     if (sfxId < sf->numSfx) {
+         sfx = &sf->soundEffects[sfxId];
+     }
+@@ -944,5 +960,15 @@ void Audio_NoteInitAll(void) {
+         note->playbackState.stereoHeadsetEffects = false;
+         note->unk_BC = 0;
+         note->synthesisState.synthesisBuffers = AudioHeap_AllocDmaMemory(&gAudioContext.notesAndBuffersPool, 0x1E0);
++        // SoH-3DS: an exhausted pool returned NULL and every later update
++        // wrote this note's decode/resample/envelope state through it (the
++        // mixer guards would now catch the writes, but a note without buffers
++        // must not sound at all). Halt hard at init: this is a sizing bug,
++        // and a silent note pool is undebuggable.
++        if (note->synthesisState.synthesisBuffers == NULL) {
++            osSyncPrintf("Audio_NoteInitAll: synthesisBuffers pool exhausted at note %d\n", i);
++            gAudioContext.numNotes = i;
++            break;
++        }
+     }
+ }
+diff --git a/soh/src/code/audio_synthesis.c b/soh/src/code/audio_synthesis.c
+index d283d4cf..e8d72977 100644
+--- a/soh/src/code/audio_synthesis.c
++++ b/soh/src/code/audio_synthesis.c
+@@ -851,28 +851,43 @@ Acmd* AudioSynth_ProcessNote(s32 noteIndex, NoteSubEu* noteSubEu, NoteSynthesisS
+                         s5 = samplesLenAdjusted;
+                         goto skip;
+                     case CODEC_S16:
+-                    case CODEC_OPUS:
+-                        AudioSynth_ClearBuffer(cmd++, DMEM_UNCOMPRESSED_NOTE, (samplesLenAdjusted + 16) * 2);
++                    case CODEC_OPUS: {
++                        if (nSamplesProcessed == 0) {
++                            AudioSynth_ClearBuffer(cmd++, DMEM_UNCOMPRESSED_NOTE, (samplesLenAdjusted + 16) * 2);
++                        }
+                         flags = A_CONTINUE;
+                         skipBytes = 0;
+-                        size_t bytesToRead;
+-                        nSamplesProcessed += samplesLenAdjusted;
++                        s32 nSamplesToRead = nSamplesToProcess;
+ 
+-                        if (((synthState->samplePosInt * 2) + (samplesLenAdjusted)*2) < audioFontSample->size) {
+-                            bytesToRead = (samplesLenAdjusted)*2;
+-                        } else {
+-                            bytesToRead = audioFontSample->size - (synthState->samplePosInt * 2);
++                        // Reading a whole block past the loop end plays back whatever the song has after
++                        // it and only then jumps, landing the seam at a random offset rather than the one
++                        // the sample asked for.
++                        if (nSamplesUntilLoopEnd > 0 && nSamplesToRead > nSamplesUntilLoopEnd) {
++                            nSamplesToRead = nSamplesUntilLoopEnd;
++                        }
++
++                        size_t bytesToRead = nSamplesToRead * 2;
++                        size_t bytesAvailable = (synthState->samplePosInt * 2) < audioFontSample->size
++                                                    ? audioFontSample->size - (synthState->samplePosInt * 2)
++                                                    : 0;
++                        if (bytesToRead > bytesAvailable) {
++                            bytesToRead = bytesAvailable;
+                         }
++
+                         // 2S2H [Port] [Custom audio] Handle decoding OPUS data
+                         if (audioFontSample->codec == CODEC_OPUS) {
+-                            aOPUSdecImpl(sampleAddr, DMEM_UNCOMPRESSED_NOTE, bytesToRead, &synthState->opusFile,
++                            aOPUSdecImpl(sampleAddr, DMEM_UNCOMPRESSED_NOTE + s5, bytesToRead, &synthState->opusFile,
+                                          synthState->samplePosInt, audioFontSample->fileSize);
+                         } else {
+-                            aLoadBuffer(cmd++, sampleAddr + (synthState->samplePosInt * 2), DMEM_UNCOMPRESSED_NOTE,
++                            aLoadBuffer(cmd++, sampleAddr + (synthState->samplePosInt * 2), DMEM_UNCOMPRESSED_NOTE + s5,
+                                         bytesToRead);
+                         }
+ 
++                        nSamplesProcessed += nSamplesToRead;
++                        s5 += nSamplesToRead * 2;
++
+                         goto skip;
++                    }
+                     case CODEC_REVERB:
+                         break;
+                 }
+@@ -885,9 +900,15 @@ Acmd* AudioSynth_ProcessNote(s32 noteIndex, NoteSubEu* noteSubEu, NoteSynthesisS
+                     } else if (audioFontSample->medium == MEDIUM_UNK) {
+                         return cmd;
+                     } else {
++                        // SoH-3DS: bound the DMA read to the sample's real
++                        // extent (see AudioLoad_DmaSampleData).
++                        if ((u32)sampleDataOffset >= audioFontSample->size) {
++                            return cmd;
++                        }
+                         sampleData = AudioLoad_DmaSampleData(sampleDataStart + sampleDataOffset + sampleAddr,
+                                                              ALIGN16((nFramesToDecode * frameSize) + 0x10), flags,
+-                                                             &synthState->sampleDmaIndex, audioFontSample->medium);
++                                                             &synthState->sampleDmaIndex, audioFontSample->medium,
++                                                             audioFontSample->size - (u32)sampleDataOffset);
+                     }
+ 
+                     if (sampleData == NULL) {
+diff --git a/soh/src/code/graph.c b/soh/src/code/graph.c
+index 4190955a..e435ae55 100644
+--- a/soh/src/code/graph.c
++++ b/soh/src/code/graph.c
+@@ -503,6 +503,10 @@ static void RunFrame() {
+     osSyncPrintf("グラフィックスレッド実行終了\n"); // "End of graphic thread execution"
+ 
+     // Graph_Update(gfxCtxTest, gameStateTest);
++    // SoH-3DS: exit(0) here skips main.c's DeinitOTR, so static destructors ran
++    // ndspExit/linearFree while the core-2 audio thread was still playing - a
++    // crash on every quit-to-HOME on hardware. Join the workers first.
++    DeinitOTR();
+     exit(0);
+ }
+ 
+diff --git a/soh/src/code/main.c b/soh/src/code/main.c
+index 98c63266..2a68dba8 100644
+--- a/soh/src/code/main.c
++++ b/soh/src/code/main.c
+@@ -1,3 +1,4 @@
++#include <stdio.h>
+ #ifdef _WIN32
+ #include <Windows.h>
+ #include <locale.h>
+@@ -58,14 +59,36 @@ int SDL_main(int argc, char* argv[]) {
+ #else //_WIN32
+ int main(int argc, char* argv[]) {
+ #endif
++    // SoH-3DS: startup breadcrumbs. spdlog's sink is not visible under an
++    // emulator, and a fault before the first frame gives no other clue how far
++    // initialisation got. stderr is routed to svcOutputDebugString by
++    // tests/soh_3ds_main.cpp.
++#ifdef __3DS__
++#define SOH3DS_TRACE(msg) fprintf(stderr, "soh-3ds boot: " msg "\n")
++#else
++#define SOH3DS_TRACE(msg) ((void)0)
++#endif
++    SOH3DS_TRACE("main entered");
+     GameConsole_Init();
++    SOH3DS_TRACE("GameConsole_Init done");
+     InitOTR(argc, argv);
++    SOH3DS_TRACE("InitOTR done");
+     // TODO: Was moved to below InitOTR because it requires window to be setup. But will be late to catch crashes.
+     CrashHandlerRegisterCallback(CrashHandler_PrintSohData);
+     BootCommands_Init();
++    SOH3DS_TRACE("BootCommands_Init done");
++#ifdef __3DS__
++    {
++        // SoH-3DS: cvar-gated rando-generation smoke test (see randomizer.cpp).
++        extern void Soh3dsRandoGenBootTest(void);
++        Soh3dsRandoGenBootTest();
++    }
++#endif
+ 
+     Heaps_Alloc();
++    SOH3DS_TRACE("Heaps_Alloc done -- entering Main()");
+     Main(0);
++    SOH3DS_TRACE("Main() returned");
+     DeinitOTR();
+     Heaps_Free();
+     return 0;
+diff --git a/soh/src/code/z_actor.c b/soh/src/code/z_actor.c
+index e36d8c49..af39073e 100644
+--- a/soh/src/code/z_actor.c
++++ b/soh/src/code/z_actor.c
+@@ -1,4 +1,5 @@
+ #include "global.h"
++#include <stdio.h>
+ #include "vt.h"
+ 
+ #include "overlays/actors/ovl_Arms_Hook/z_arms_hook.h"
+@@ -3332,6 +3333,14 @@ Actor* Actor_Spawn(ActorContext* actorCtx, PlayState* play, s16 actorId, f32 pos
+     ActorDBEntry* dbEntry = ActorDB_Retrieve(actorId);
+ 
+     assert(dbEntry->valid);
++    // SoH-3DS: the assert is dead under NDEBUG. An invalid id (corrupt or
++    // version-mismatched room asset) returns the static invalid entry with
++    // instanceSize=0; continuing would malloc(0) and then write ~0x14C bytes
++    // of Actor fields past the block - silent arena corruption.
++    if (!dbEntry->valid) {
++        fprintf(stderr, "actor: invalid actorId %d, spawn refused\n", actorId);
++        return NULL;
++    }
+ 
+     if (HREG(20) != 0) {
+         // "Actor class addition [%d:%s]"
+diff --git a/soh/src/code/z_bgcheck.c b/soh/src/code/z_bgcheck.c
+index d3c18357..bde24e41 100644
+--- a/soh/src/code/z_bgcheck.c
++++ b/soh/src/code/z_bgcheck.c
+@@ -3882,6 +3882,12 @@ u16 BgCheck_GetBgCamSettingImpl(CollisionContext* colCtx, u32 bgCamIndex, s32 bg
+     }
+ 
+     bgCamList = colHeader->cameraDataList;
++    // SoH-3DS: bgCamIndex is asset data (surface/waterbox/door cam ids);
++    // cameraDataListLen exists precisely for this bound (known crash class:
++    // Dodongo blue warp) but only the player-start path used it.
++    if (bgCamList == NULL || bgCamIndex >= colHeader->cameraDataListLen) {
++        return CAM_SET_NONE;
++    }
+     camSetting = bgCamList[bgCamIndex].cameraSType;
+ 
+     return camSetting;
+@@ -3964,6 +3970,10 @@ Vec3s* BgCheck_GetBgCamFuncDataImpl(CollisionContext* colCtx, s32 bgCamIndex, s3
+     if (bgCamList == PHYSICAL_TO_VIRTUAL(gSegments[0])) {
+         return NULL;
+     }
++    // SoH-3DS: same asset-index bound as BgCheck_GetBgCamSettingImpl.
++    if (bgCamList == NULL || bgCamIndex < 0 || (size_t)bgCamIndex >= colHeader->cameraDataListLen) {
++        return NULL;
++    }
+ 
+     return (Vec3s*)SEGMENTED_TO_VIRTUAL(bgCamList[bgCamIndex].camPosData);
+ }
+diff --git a/soh/src/code/z_construct.c b/soh/src/code/z_construct.c
+index 3eb5ec42..5f3b7240 100644
+--- a/soh/src/code/z_construct.c
++++ b/soh/src/code/z_construct.c
+@@ -1,4 +1,5 @@
+ #include "global.h"
++#include <stdio.h>
+ #include <textures/do_action_static/do_action_static.h>
+ #include <assert.h>
+ #include "soh/ResourceManagerHelpers.h"
+@@ -48,11 +49,16 @@ void func_801109B0(PlayState* play) {
+     osSyncPrintf("ＤＯアクション テクスチャ初期=%x\n", 0x480); // "DO Action Texture Initialization"
+     osSyncPrintf("parameter->do_actionSegment=%x\n", interfaceCtx->doActionSegment);
+ 
+-    assert(interfaceCtx->doActionSegment != NULL);
+-
+-    interfaceCtx->doActionSegment[0] = gAttackDoActionENGTex;
+-    interfaceCtx->doActionSegment[1] = gCheckDoActionENGTex;
+-    interfaceCtx->doActionSegment[2] = gReturnDoActionENGTex;
++    // SoH-3DS: assert is dead under NDEBUG; a failed alloc at scene-transition
++    // heap pressure wrote three pointers through null. HUD do-action icons
++    // degrade to absent instead.
++    if (interfaceCtx->doActionSegment != NULL) {
++        interfaceCtx->doActionSegment[0] = gAttackDoActionENGTex;
++        interfaceCtx->doActionSegment[1] = gCheckDoActionENGTex;
++        interfaceCtx->doActionSegment[2] = gReturnDoActionENGTex;
++    } else {
++        fprintf(stderr, "construct: doActionSegment alloc failed\n");
++    }
+ 
+     interfaceCtx->iconItemSegment =
+         GAMESTATE_ALLOC_MC(&play->state, 0x1000 * ARRAY_COUNT(gSaveContext.equips.buttonItems));
+diff --git a/soh/src/code/z_effect_soft_sprite.c b/soh/src/code/z_effect_soft_sprite.c
+index ee3882f8..d2676035 100644
+--- a/soh/src/code/z_effect_soft_sprite.c
++++ b/soh/src/code/z_effect_soft_sprite.c
+@@ -1,4 +1,5 @@
+ #include "global.h"
++#include <stdio.h>
+ #include "vt.h"
+ 
+ #include "soh/frame_interpolation.h"
+@@ -19,13 +20,21 @@ void EffectSs_InitInfo(PlayState* play, s32 tableSize) {
+     }
+ 
+     sEffectSsInfo.table = GAMESTATE_ALLOC_MC(&play->state, tableSize * sizeof(EffectSs));
+-    assert(sEffectSsInfo.table != NULL);
++    // SoH-3DS: assert dead under NDEBUG; a failed alloc wrote every slot
++    // through null. Zero-size pool degrades to "no soft-sprite effects".
++    if (sEffectSsInfo.table == NULL) {
++        fprintf(stderr, "effectss: pool alloc failed, effects disabled this scene\n");
++        tableSize = 0;
++    }
+ 
+     sEffectSsInfo.searchStartIndex = 0;
+     sEffectSsInfo.tableSize = tableSize;
+ 
+-    for (effectSs = &sEffectSsInfo.table[0]; effectSs < &sEffectSsInfo.table[sEffectSsInfo.tableSize]; effectSs++) {
+-        EffectSs_Reset(effectSs);
++    if (sEffectSsInfo.table != NULL) {
++        for (effectSs = &sEffectSsInfo.table[0]; effectSs < &sEffectSsInfo.table[sEffectSsInfo.tableSize];
++             effectSs++) {
++            EffectSs_Reset(effectSs);
++        }
+     }
+ 
+     overlay = &gEffectSsOverlayTable[0];
+diff --git a/soh/src/code/z_message_PAL.c b/soh/src/code/z_message_PAL.c
+index 66a7baae..a61bf6fe 100644
+--- a/soh/src/code/z_message_PAL.c
++++ b/soh/src/code/z_message_PAL.c
+@@ -1,4 +1,5 @@
+ #include "global.h"
++#include <stdio.h>
+ #include "message_data_static.h"
+ #include "vt.h"
+ 
+@@ -1897,6 +1898,15 @@ void Message_DecodeJPN(PlayState* play) {
+     Font* font = &play->msgCtx.font;
+ 
+     while (true) {
++        // SoH-3DS: same capacity clamp as Message_Decode below - wide buffer
++        // is 100 entries, source msgBufWide is 640 entries (1280 bytes).
++        if (decodedBufPos >= (s16)(ARRAY_COUNT(msgCtx->msgBufDecodedWide) - 16)) {
++            font->msgBufWide[msgCtx->msgBufPos] = MESSAGE_END_JPN;
++        }
++        if (msgCtx->msgBufPos >= (s16)(sizeof(font->msgBuf) / 2 - 2)) {
++            msgCtx->msgBufPos = (s16)(sizeof(font->msgBuf) / 2 - 2);
++            font->msgBufWide[msgCtx->msgBufPos] = MESSAGE_END_JPN;
++        }
+         curChar = msgCtx->msgBufDecodedWide[decodedBufPos] = font->msgBufWide[msgCtx->msgBufPos];
+ 
+         // #region SOH - Don't require input for credits textboxes in randomizer
+@@ -2280,6 +2290,19 @@ void Message_Decode(PlayState* play) {
+     // #endregion
+ 
+     while (true) {
++        // SoH-3DS: decodedBufPos was bounded only by message content - a long
++        // custom/rando message (or one missing MESSAGE_END) overflowed
++        // msgBufDecoded[200] into the rest of MessageContext, and msgBufPos
++        // could walk past msgBuf[1280]. Force-terminate near capacity; the 16
++        // byte margin covers the largest single-iteration splice (player name
++        // + digit expansion).
++        if (decodedBufPos >= (s16)(sizeof(msgCtx->msgBufDecoded) - 16)) {
++            font->msgBuf[msgCtx->msgBufPos] = MESSAGE_END;
++        }
++        if (msgCtx->msgBufPos >= (s16)(sizeof(font->msgBuf) - 1)) {
++            msgCtx->msgBufPos = (s16)(sizeof(font->msgBuf) - 1);
++            font->msgBuf[msgCtx->msgBufPos] = MESSAGE_END;
++        }
+         phi_s1 = temp_s2 = msgCtx->msgBufDecoded[decodedBufPos] = font->msgBuf[msgCtx->msgBufPos];
+ 
+         // Don't require input for credits textboxes in randomizer
+@@ -2687,6 +2710,13 @@ void Message_OpenText(PlayState* play, u16 textId) {
+     Font* font = &msgCtx->font;
+     s16 textBoxType;
+ 
++    // SoH-3DS: textboxSegment alloc (z_construct.c) can fail at the heap
++    // ceiling; every textbox draw memcpys into it. Degrade to no textbox.
++    if (msgCtx->textboxSegment == NULL) {
++        fprintf(stderr, "msg: textboxSegment missing, dropping textId %04x\n", textId);
++        return;
++    }
++
+     bool loadFromMessageTable = true;
+     GameInteractor_ExecuteOnOpenText(&textId, &loadFromMessageTable);
+ 
+@@ -2775,6 +2805,11 @@ void Message_OpenText(PlayState* play, u16 textId) {
+         Message_FindCreditsMessage(play, textId);
+         msgCtx->msgLength = font->msgLength;
+         char* src = (uintptr_t)font->msgOffset;
++        // SoH-3DS: msgLength is the raw resource string size; a message longer
++        // than msgBuf[1280] overflowed the Font tail into MessageContext.
++        if (font->msgLength > (s32)sizeof(font->msgBuf)) {
++            msgCtx->msgLength = font->msgLength = (s32)sizeof(font->msgBuf);
++        }
+         memcpy(font->msgBuf, src, font->msgLength);
+ 
+         // OTRTODO
+@@ -2809,6 +2844,10 @@ void Message_OpenText(PlayState* play, u16 textId) {
+         }
+         msgCtx->msgLength = font->msgLength;
+         char* src = (uintptr_t)font->msgOffset;
++        // SoH-3DS: same clamp as the credits path above.
++        if (font->msgLength > (s32)sizeof(font->msgBuf)) {
++            msgCtx->msgLength = font->msgLength = (s32)sizeof(font->msgBuf);
++        }
+         memcpy(font->msgBuf, src, font->msgLength);
+     }
+ 
+diff --git a/soh/src/code/z_play.c b/soh/src/code/z_play.c
+index 37fc299d..3c007218 100644
+--- a/soh/src/code/z_play.c
++++ b/soh/src/code/z_play.c
+@@ -1,4 +1,5 @@
+ #include "global.h"
++#include <stdio.h>
+ #include "vt.h"
+ 
+ #include <string.h>
+@@ -198,6 +199,23 @@ void Play_Destroy(GameState* thisx) {
+     PlayState* play = (PlayState*)thisx;
+     Player* player = GET_PLAYER(play);
+ 
++#ifdef __3DS__
++    // SoH-3DS: record the departing scene's object bank for the eviction seam
++    // in OTRPlay_SpawnScene (MK64-3DS pattern: LoadTrack records, the
++    // clean-world boundary releases). objectCtx is still fully valid here.
++    {
++        extern void Soh3dsRecordDepartingObjects(const s16* ids, s32 count);
++        s16 ids[OBJECT_EXCHANGE_BANK_MAX];
++        s32 n = 0;
++        for (s32 i = 0; i < play->objectCtx.num && i < OBJECT_EXCHANGE_BANK_MAX; i++) {
++            if (play->objectCtx.status[i].id > 0) {
++                ids[n++] = play->objectCtx.status[i].id;
++            }
++        }
++        Soh3dsRecordDepartingObjects(ids, n);
++    }
++#endif
++
+     GameInteractor_ExecuteOnPlayDestroy();
+ 
+     play->state.gfxCtx->callback = NULL;
+@@ -460,6 +478,16 @@ void Play_Init(GameState* thisx) {
+     // save the base scene layer (before accounting for the special cases below) to use later for the transition type
+     baseSceneLayer = gSaveContext.sceneLayer;
+ 
++    // SoH-3DS: entranceIndex arrives unvalidated from the JSON save (and any
++    // debug/rando warp); an out-of-range value indexed gEntranceTable and
++    // then gSceneTable/sceneFlags with garbage. Reset to the game's opening
++    // entrance instead of corrupting.
++    if (gSaveContext.entranceIndex < 0 || gSaveContext.entranceIndex >= ENTR_MAX) {
++        fprintf(stderr, "play: entranceIndex %d out of range, resetting to 0\n", gSaveContext.entranceIndex);
++        gSaveContext.entranceIndex = 0;
++    }
++
++
+     if ((gEntranceTable[((void)0, gSaveContext.entranceIndex)].scene == SCENE_HYRULE_FIELD) && !LINK_IS_ADULT &&
+         !IS_CUTSCENE_LAYER) {
+         if (CHECK_QUEST_ITEM(QUEST_KOKIRI_EMERALD) && CHECK_QUEST_ITEM(QUEST_GORON_RUBY) &&
+@@ -473,6 +501,11 @@ void Play_Init(GameState* thisx) {
+         gSaveContext.sceneLayer = (Flags_GetEventChkInf(EVENTCHKINF_USED_FOREST_TEMPLE_BLUE_WARP)) ? 3 : 2;
+     }
+ 
++    // SoH-3DS: the PlayState comes from arena malloc, so sceneSegment is
++    // garbage until SpawnScene assigns it. Clear it explicitly: the eviction
++    // seam in OTRPlay_SpawnScene refuses to run when a live sceneSegment is
++    // present (reused-PlayState hazard), and garbage reads as "live".
++    play->sceneSegment = NULL;
+     Play_SpawnScene(play,
+                     gEntranceTable[((void)0, gSaveContext.entranceIndex) + ((void)0, gSaveContext.sceneLayer)].scene,
+                     gEntranceTable[((void)0, gSaveContext.sceneLayer) + ((void)0, gSaveContext.entranceIndex)].spawn);
+@@ -551,6 +584,19 @@ void Play_Init(GameState* thisx) {
+     osSyncPrintf("ZELDA ALLOC SIZE=%x\n", THA_GetSize(&play->state.tha));
+     zAllocSize = THA_GetSize(&play->state.tha);
+     zAlloc = (uintptr_t)GAMESTATE_ALLOC_MC(&play->state, zAllocSize);
++    // SoH-3DS: a failed alloc previously seeded the Zelda arena at address
++    // ZERO, so every later actor malloc "succeeded" near-null and scattered
++    // low-address writes over random actors. Shrink until it fits; a smaller
++    // arena degrades to fewer actor spawns (null-checked), not corruption.
++    while (zAlloc == 0 && zAllocSize > 0x40000) {
++        zAllocSize /= 2;
++        fprintf(stderr, "play: zelda arena alloc failed, retrying at %u KiB\n", (unsigned)(zAllocSize / 1024));
++        zAlloc = (uintptr_t)GAMESTATE_ALLOC_MC(&play->state, zAllocSize);
++    }
++    if (zAlloc == 0) {
++        fprintf(stderr, "play: FATAL zelda arena unallocatable\n");
++        abort();
++    }
+     zAllocAligned = (zAlloc + 8) & ~0xF;
+     ZeldaArena_Init((void*)zAllocAligned, zAllocSize - (zAllocAligned - zAlloc));
+     // "Zelda Heap"
+@@ -609,7 +655,14 @@ void Play_Init(GameState* thisx) {
+     gSaveContext.respawnFlag = 0;
+ 
+     // #region SOH [Stats]
+-    if (gSaveContext.ship.stats.sceneNum != gPlayState->sceneNum) {
++    // SoH-3DS: tsIdx is u32, persists in the save, and increments on every
++    // scene/room transition forever; this site truncated it to u16 and indexed
++    // an 8191-entry array with it - after 8191 lifetime transitions every
++    // later transition wrote out of bounds (up to ~700 KB past gSaveContext,
++    // through gAudioContext and the rest of .bss). Long-played saves made it
++    // permanent. Saturate: the stats stop recording, nothing corrupts.
++    if (gSaveContext.ship.stats.sceneNum != gPlayState->sceneNum &&
++        gSaveContext.ship.stats.tsIdx < ARRAY_COUNT(gSaveContext.ship.stats.sceneTimestamps)) {
+         u16 idx = gSaveContext.ship.stats.tsIdx;
+         gSaveContext.ship.stats.sceneTimestamps[idx].sceneTime = gSaveContext.ship.stats.sceneTimer / 2;
+         gSaveContext.ship.stats.sceneTimestamps[idx].roomTime = gSaveContext.ship.stats.roomTimer / 2;
+@@ -621,7 +674,8 @@ void Play_Init(GameState* thisx) {
+         gSaveContext.ship.stats.tsIdx++;
+         gSaveContext.ship.stats.sceneTimer = 0;
+         gSaveContext.ship.stats.roomTimer = 0;
+-    } else if (gSaveContext.ship.stats.roomNum != gPlayState->roomCtx.curRoom.num) {
++    } else if (gSaveContext.ship.stats.roomNum != gPlayState->roomCtx.curRoom.num &&
++               gSaveContext.ship.stats.tsIdx < ARRAY_COUNT(gSaveContext.ship.stats.sceneTimestamps)) {
+         u16 idx = gSaveContext.ship.stats.tsIdx;
+         gSaveContext.ship.stats.sceneTimestamps[idx].roomTime = gSaveContext.ship.stats.roomTimer / 2;
+         gSaveContext.ship.stats.sceneTimestamps[idx].scene = gSaveContext.ship.stats.sceneNum;
+diff --git a/soh/src/code/z_room.c b/soh/src/code/z_room.c
+index cfdedcda..374ef181 100644
+--- a/soh/src/code/z_room.c
++++ b/soh/src/code/z_room.c
+@@ -286,8 +286,16 @@ void Room_DrawBackground2D(Gfx** gfxP, void* tex, void* tlut, u16 width, u16 hei
+ 
+     if (ResourceMgr_ResourceIsBackground((char*)tex)) {
+         char* blob = (char*)ResourceGetDataByName((char*)tex);
+-        swapAndConvertJPEG(blob);
+-        bg->b.imagePtr = (uintptr_t)blob;
++        // SoH-3DS: a failed load degrades to null (heap ceiling / transient);
++        // the historical crash_dump-era near-NULL read started here. Keep the
++        // path-string imagePtr; the draw shows garbage for a frame instead of
++        // reading address 0xB.
++        if (blob != NULL) {
++            swapAndConvertJPEG(blob);
++            bg->b.imagePtr = (uintptr_t)blob;
++        } else {
++            osSyncPrintf("room: null background %s\n", (char*)tex);
++        }
+     }
+ 
+     gfx = (Gfx*)(bg + 1);
+@@ -648,14 +656,19 @@ void Room_FinishRoomChange(PlayState* play, RoomContext* roomCtx) {
+         Map_SavePlayerInitialInfo(play);
+     }
+     Audio_SetEnvReverb(play->roomCtx.curRoom.echo);
+-    u8 idx = gSaveContext.ship.stats.tsIdx;
+-    gSaveContext.ship.stats.sceneTimestamps[idx].scene = gSaveContext.ship.stats.sceneNum;
+-    gSaveContext.ship.stats.sceneTimestamps[idx].room = gSaveContext.ship.stats.roomNum;
+-    gSaveContext.ship.stats.sceneTimestamps[idx].roomTime = gSaveContext.ship.stats.roomTimer / 2;
+-    gSaveContext.ship.stats.sceneTimestamps[idx].isRoom =
+-        gPlayState->sceneNum == gSaveContext.ship.stats.sceneTimestamps[idx].scene &&
+-        gPlayState->roomCtx.curRoom.num != gSaveContext.ship.stats.sceneTimestamps[idx].room;
+-    gSaveContext.ship.stats.tsIdx++;
++    // SoH-3DS: tsIdx is u32; the u8 truncation here wrapped in-bounds but
++    // clobbered old entries, and the sibling z_play.c sites overflowed
++    // outright. Saturate like z_play.c does now.
++    if (gSaveContext.ship.stats.tsIdx < ARRAY_COUNT(gSaveContext.ship.stats.sceneTimestamps)) {
++        u32 idx = gSaveContext.ship.stats.tsIdx;
++        gSaveContext.ship.stats.sceneTimestamps[idx].scene = gSaveContext.ship.stats.sceneNum;
++        gSaveContext.ship.stats.sceneTimestamps[idx].room = gSaveContext.ship.stats.roomNum;
++        gSaveContext.ship.stats.sceneTimestamps[idx].roomTime = gSaveContext.ship.stats.roomTimer / 2;
++        gSaveContext.ship.stats.sceneTimestamps[idx].isRoom =
++            gPlayState->sceneNum == gSaveContext.ship.stats.sceneTimestamps[idx].scene &&
++            gPlayState->roomCtx.curRoom.num != gSaveContext.ship.stats.sceneTimestamps[idx].room;
++        gSaveContext.ship.stats.tsIdx++;
++    }
+     gSaveContext.ship.stats.roomNum = roomCtx->curRoom.num;
+     gSaveContext.ship.stats.roomTimer = 0;
+ }
+diff --git a/soh/src/code/z_scene.c b/soh/src/code/z_scene.c
+index 6dcc51d9..f7879ac3 100644
+--- a/soh/src/code/z_scene.c
++++ b/soh/src/code/z_scene.c
+@@ -1,4 +1,5 @@
+ #include "global.h"
++#include <stdio.h>
+ #include "vt.h"
+ #include "soh/ActorDB.h"
+ #include <assert.h>
+@@ -247,8 +248,13 @@ void Scene_CommandSpecialFiles(PlayState* play, SceneCmd* cmd) {
+         gSegments[5] = VIRTUAL_TO_PHYSICAL(play->objectCtx.status[play->objectCtx.subKeepIndex].segment);
+     }
+ 
+-    if (cmd->specialFiles.cUpElfMsgNum != 0) {
++    // SoH-3DS: cUpElfMsgNum is asset data; sNaviMsgFiles has exactly 3
++    // entries (defined at the bottom of this file) and the old unchecked
++    // index read a garbage RomFile.
++    if (cmd->specialFiles.cUpElfMsgNum >= 1 && cmd->specialFiles.cUpElfMsgNum <= 3) {
+         play->cUpElfMsgs = Play_LoadFile(play, &sNaviMsgFiles[cmd->specialFiles.cUpElfMsgNum - 1]);
++    } else if (cmd->specialFiles.cUpElfMsgNum != 0) {
++        fprintf(stderr, "scene: cUpElfMsgNum %d out of range, skipped\n", cmd->specialFiles.cUpElfMsgNum);
+     }
+ }
+ 
+diff --git a/soh/src/code/z_skelanime.c b/soh/src/code/z_skelanime.c
+index 3449c2ed..78b33a6f 100644
+--- a/soh/src/code/z_skelanime.c
++++ b/soh/src/code/z_skelanime.c
+@@ -1101,6 +1101,14 @@ void SkelAnime_InitLink(PlayState* play, SkelAnime* skelAnime, FlexSkeletonHeade
+     if (ResourceMgr_OTRSigCheck(skeletonHeaderSeg) != 0)
+         skeletonHeaderSeg = ResourceMgr_LoadSkeletonByName(skeletonHeaderSeg, skelAnime);
+ 
++    if (skeletonHeaderSeg == NULL) {
++        // SoH-3DS: failed skeleton load (heap pressure / bad asset). The old
++        // path deref'd the null header for limbCount and wrote garbage-sized
++        // tables every frame. Leave the SkelAnime empty instead.
++        osSyncPrintf("SkelAnime_InitLink: null skeleton header, skipping\n");
++        skelAnime->limbCount = 0;
++        return;
++    }
+     FlexSkeletonHeader* skeletonHeader = SEGMENTED_TO_VIRTUAL(skeletonHeaderSeg);
+     s32 headerJointCount = skeletonHeader->sh.limbCount;
+     s32 limbCount;
+@@ -1131,6 +1139,13 @@ void SkelAnime_InitLink(PlayState* play, SkelAnime* skelAnime, FlexSkeletonHeade
+         skelAnime->morphTable = ZELDA_ARENA_MALLOC_DEBUG(allocSize);
+     } else {
+         assert(limbBufCount == limbCount);
++        // SoH-3DS: the assert compiles out in release; a custom/alt skeleton
++        // with more limbs than the actor's static buffer wrote out of bounds
++        // inside the actor every frame. Clamp to the caller's buffer.
++        if (limbCount > limbBufCount) {
++            osSyncPrintf("SkelAnime_InitLink: limbCount %d > buffer %d, clamping\n", limbCount, limbBufCount);
++            skelAnime->limbCount = limbCount = limbBufCount;
++        }
+ 
+         skelAnime->jointTable = (Vec3s*)ALIGN16((uintptr_t)jointTable);
+         skelAnime->morphTable = (Vec3s*)ALIGN16((uintptr_t)morphTable);
+@@ -1450,6 +1465,11 @@ s32 SkelAnime_Init(PlayState* play, SkelAnime* skelAnime, SkeletonHeader* skelet
+     if (ResourceMgr_OTRSigCheck(skeletonHeaderSeg))
+         skeletonHeaderSeg = ResourceMgr_LoadSkeletonByName(skeletonHeaderSeg, skelAnime);
+ 
++    if (skeletonHeaderSeg == NULL) {
++        osSyncPrintf("SkelAnime_Init: null skeleton header, skipping\n");
++        skelAnime->limbCount = 0;
++        return 0;
++    }
+     SkeletonHeader* skeletonHeader = SEGMENTED_TO_VIRTUAL(skeletonHeaderSeg);
+ 
+     skelAnime->skeletonHeader = skeletonHeader;
+@@ -1460,6 +1480,11 @@ s32 SkelAnime_Init(PlayState* play, SkelAnime* skelAnime, SkeletonHeader* skelet
+         skelAnime->morphTable = ZELDA_ARENA_MALLOC_DEBUG(skelAnime->limbCount * sizeof(*skelAnime->morphTable));
+     } else {
+         assert(limbCount == skelAnime->limbCount);
++        if (limbCount < skelAnime->limbCount) {
++            // SoH-3DS: release builds compiled the assert out; clamp to the
++            // caller's buffer so per-frame joint writes stay inside it.
++            skelAnime->limbCount = limbCount;
++        }
+         skelAnime->jointTable = jointTable;
+         skelAnime->morphTable = morphTable;
+     }
+@@ -1482,6 +1507,12 @@ s32 SkelAnime_InitFlex(PlayState* play, SkelAnime* skelAnime, FlexSkeletonHeader
+     if (ResourceMgr_OTRSigCheck(skeletonHeaderSeg) != 0)
+         skeletonHeaderSeg = ResourceMgr_LoadSkeletonByName(skeletonHeaderSeg, skelAnime);
+ 
++    if (skeletonHeaderSeg == NULL) {
++        osSyncPrintf("SkelAnime_InitFlex: null skeleton header, skipping\n");
++        skelAnime->limbCount = 0;
++        skelAnime->dListCount = 0;
++        return 0;
++    }
+     FlexSkeletonHeader* skeletonHeader = SEGMENTED_TO_VIRTUAL(skeletonHeaderSeg);
+ 
+     skelAnime->skeletonHeader = skeletonHeader;
+@@ -1495,6 +1526,10 @@ s32 SkelAnime_InitFlex(PlayState* play, SkelAnime* skelAnime, FlexSkeletonHeader
+         skelAnime->morphTable = ZELDA_ARENA_MALLOC_DEBUG(skelAnime->limbCount * sizeof(*skelAnime->morphTable));
+     } else {
+         assert(limbCount == skelAnime->limbCount);
++        if (limbCount < skelAnime->limbCount) {
++            // SoH-3DS: same release-mode clamp as SkelAnime_Init.
++            skelAnime->limbCount = limbCount;
++        }
+         skelAnime->jointTable = jointTable;
+         skelAnime->morphTable = morphTable;
+     }
+@@ -1518,6 +1553,12 @@ s32 SkelAnime_InitSkin(PlayState* play, SkelAnime* skelAnime, SkeletonHeader* sk
+     if (ResourceMgr_OTRSigCheck(skeletonHeaderSeg) != 0)
+         animation = ResourceMgr_LoadAnimByName(skeletonHeaderSeg);
+ 
++    if (skeletonHeaderSeg == NULL) {
++        osSyncPrintf("SkelAnime_InitSkin: null skeleton header, skipping\n");
++        skelAnime->limbCount = 0;
++        return 0;
++    }
++
+     SkeletonHeader* skeletonHeader = SEGMENTED_TO_VIRTUAL(skeletonHeaderSeg);
+ 
+     skelAnime->skeletonHeader = skeletonHeader;
+diff --git a/soh/src/overlays/actors/ovl_player_actor/z_player.c b/soh/src/overlays/actors/ovl_player_actor/z_player.c
+index 0786319c..cfd7ade0 100644
+--- a/soh/src/overlays/actors/ovl_player_actor/z_player.c
++++ b/soh/src/overlays/actors/ovl_player_actor/z_player.c
+@@ -1613,7 +1613,22 @@ void Player_ApplyYawFromAnim(Player* this) {
+     this->skelAnime.jointTable[1].y = 0;
+ }
+ 
++#ifdef __3DS__
++// SoH-3DS DIAGNOSTIC: manual ISG has exactly two distinguishable failure
++// modes - meleeWeaponState never becomes nonzero (the crouch stab never
++// lands), or it becomes nonzero and this function clears it (the interrupt
++// does not persist). Hardware shows no log, so both transitions are reported
++// to the bottom-screen console. Weak: absent in every other build.
++// Gated at runtime on sdmc:/3ds/soh/isg.flag, so normal play is untouched.
++extern void Soh3dsIsgProbe(int newState, int oldState, unsigned long pc) __attribute__((weak));
++#endif
++
+ void func_80832318(Player* this) {
++#ifdef __3DS__
++    if (this->meleeWeaponState != 0 && Soh3dsIsgProbe != NULL) {
++        Soh3dsIsgProbe(0, this->meleeWeaponState, (unsigned long)__builtin_return_address(0));
++    }
++#endif
+     this->stateFlags2 &= ~PLAYER_STATE2_SPIN_ATTACKING;
+     this->meleeWeaponState = 0;
+     this->meleeWeaponInfo[0].active = this->meleeWeaponInfo[1].active = this->meleeWeaponInfo[2].active = 0;
+@@ -2359,6 +2374,14 @@ void func_80833A20(Player* this, s32 newMeleeWeaponState) {
+         }
+     }
+ 
++#ifdef __3DS__
++    // Report the 0->nonzero write too. Without this the clear hook alone
++    // cannot tell "the stab never set the state" from "no clear was sampled",
++    // which is the whole point of the probe.
++    if (Soh3dsIsgProbe != NULL && (newMeleeWeaponState != 0) != (this->meleeWeaponState != 0)) {
++        Soh3dsIsgProbe(newMeleeWeaponState, this->meleeWeaponState, 0);
++    }
++#endif
+     this->meleeWeaponState = newMeleeWeaponState;
+ }
+ 
+diff --git a/soh/src/overlays/gamestates/ovl_file_choose/z_file_choose.c b/soh/src/overlays/gamestates/ovl_file_choose/z_file_choose.c
+index 77ea1c7a..cac4f448 100644
+--- a/soh/src/overlays/gamestates/ovl_file_choose/z_file_choose.c
++++ b/soh/src/overlays/gamestates/ovl_file_choose/z_file_choose.c
+@@ -359,11 +359,11 @@ int retries = 0;
+ bool fileSelectSpoilerFileLoaded = false;
+ 
+ void FileChoose_UpdateRandomizer() {
+-    if (CVarGetInteger(CVAR_GENERAL("RandoGenerating"), 0) != 0 && generating == 0) {
++    if (Randomizer_IsGenerating() && generating == 0) {
+         generating = 1;
+         Audio_PlaySequenceWithSeqPlayerIO(SEQ_PLAYER_BGM_MAIN, NA_BGM_HORSE, 0, 7, 1);
+         return;
+-    } else if (CVarGetInteger(CVAR_GENERAL("RandoGenerating"), 0) == 0 && generating) {
++    } else if (!Randomizer_IsGenerating() && generating) {
+         if (Randomizer_IsSeedGenerated()) {
+             Audio_PlayFanfare(NA_BGM_HORSE_GOAL);
+             retries = 0;
+@@ -425,6 +425,9 @@ void FileChoose_UpdateMainMenu(GameState* thisx) {
+     bool dpad = CVarGetInteger(CVAR_SETTING("DpadInText"), 0);
+ 
+     FileChoose_UpdateRandomizer();
++    if (generating) {
++        return;
++    }
+ 
+     if (CHECK_BTN_ALL(input->press.button, BTN_START) || CHECK_BTN_ALL(input->press.button, BTN_A)) {
+         if (this->buttonIndex <= FS_BTN_MAIN_FILE_3) {
+@@ -2508,6 +2511,7 @@ void FileChoose_LoadGame(GameState* thisx) {
+                          &gSfxDefaultFreqAndVolScale, &gSfxDefaultReverb);
+     gSaveContext.fileNum = this->buttonIndex;
+     gSaveContext.gameMode = GAMEMODE_NORMAL;
++    Randomizer_WaitForGeneration();
+ 
+     if ((this->buttonIndex == FS_BTN_SELECT_FILE_1 && CVarGetInteger(CVAR_DEVELOPER_TOOLS("DebugEnabled"), 0)) ||
+         this->buttonIndex == 0xFF) {
+diff --git a/soh/src/overlays/misc/ovl_kaleido_scope/z_kaleido_item.c b/soh/src/overlays/misc/ovl_kaleido_scope/z_kaleido_item.c
+index 073e10c5..a37a8cda 100644
+--- a/soh/src/overlays/misc/ovl_kaleido_scope/z_kaleido_item.c
++++ b/soh/src/overlays/misc/ovl_kaleido_scope/z_kaleido_item.c
+@@ -773,6 +773,12 @@ void KaleidoScope_DrawItemSelect(PlayState* play) {
+ 
+             gSPVertex(POLY_OPA_DISP++, &pauseCtx->itemVtx[j + 0], 4, 0);
+             int itemId = gSaveContext.inventory.items[i];
++            // SoH-3DS: itemId is a raw save byte; gItemIcons has 158 entries
++            // and the old code indexed it with anything != 0xFF (corrupt save
++            // -> wild pointer into the texture lookup).
++            if (itemId < 0 || itemId >= 158) {
++                continue;
++            }
+             bool not_acquired = !CHECK_AGE_REQ_ITEM(itemId);
+             if (not_acquired) {
+                 gDPSetGrayscaleColor(POLY_OPA_DISP++, 109, 109, 109, 255);
+diff --git a/soh/src/overlays/misc/ovl_kaleido_scope/z_kaleido_scope_PAL.c b/soh/src/overlays/misc/ovl_kaleido_scope/z_kaleido_scope_PAL.c
+index 990d9749..fcc40429 100644
+--- a/soh/src/overlays/misc/ovl_kaleido_scope/z_kaleido_scope_PAL.c
++++ b/soh/src/overlays/misc/ovl_kaleido_scope/z_kaleido_scope_PAL.c
+@@ -3974,7 +3974,14 @@ void KaleidoScope_Update(PlayState* play) {
+ #endif
+ 
+             // pauseCtx->nameSegment = (void*)(((uintptr_t)pauseCtx->iconItemLangSegment + size + 0xF) & ~0xF);
+-            pauseCtx->nameSegment = malloc(0x400 + 0xA00); // OTRTODO: GET RID OF THIS
++            // SoH-3DS: was malloc(0xE00) with no null check and NO free - a
++            // null write at the heap ceiling plus a 3.5 KB leak per pause
++            // open. Fixed-size scratch reused per pause; make it static and
++            // remove both failure paths entirely.
++            {
++                static char sNameSegmentBuf[0x400 + 0xA00] __attribute__((aligned(16)));
++                pauseCtx->nameSegment = sNameSegmentBuf;
++            }
+ 
+             osSyncPrintf("サイズ＝%x\n", size2 + size1 + size0 + size);
+             osSyncPrintf("item_name I_N_PT=%x\n", 0x800);
