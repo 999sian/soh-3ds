@@ -60,7 +60,10 @@ static bool MirroredWorld_ShouldApply(int32_t sceneNum) {
 static void UpdateMirrorModeState(int32_t sceneNum) {
     bool nextMirroredWorld = MirroredWorld_ShouldApply(sceneNum);
 
-    if (prevMirroredWorld == nextMirroredWorld) {
+    // The derived CVar may have been restored from a previous session before
+    // this process has applied any mirror patches.
+    if (prevMirroredWorld == nextMirroredWorld &&
+        (CVarGetInteger(CVAR_MIRRORED_WORLD_NAME, 0) != 0) == nextMirroredWorld) {
         return;
     }
     prevMirroredWorld = nextMirroredWorld;
@@ -77,6 +80,10 @@ static void UpdateMirrorModeState(int32_t sceneNum) {
 static void RegisterMirroredWorld() {
     if (gPlayState != NULL) {
         UpdateMirrorModeState(gPlayState->sceneNum);
+    } else if (CVAR_MIRRORED_WORLD_MODE_VALUE == MIRRORED_WORLD_OFF) {
+        // Off is independent of the scene and must also clear stale state at
+        // startup or when the setting is changed from file select.
+        UpdateMirrorModeState(0);
     }
 
     COND_HOOK(OnSceneInit, CVAR_MIRRORED_WORLD_MODE_VALUE, UpdateMirrorModeState);

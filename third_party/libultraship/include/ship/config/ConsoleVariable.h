@@ -4,6 +4,7 @@
 #include <nlohmann/json.hpp>
 #include <stdint.h>
 #include <memory>
+#include <mutex>
 #include <unordered_map>
 #include <string>
 #include <string_view>
@@ -58,8 +59,6 @@ class ConsoleVariable {
      * @param name CVar name (case-sensitive).
      */
     std::shared_ptr<CVar> Get(const char* name);
-    // Non-owning lookup for the typed getters; valid until the next mutation.
-    const CVar* Peek(const char* name) const;
 
     /**
      * @brief Returns the integer value of a CVar, or the default if not found or wrong type.
@@ -198,6 +197,11 @@ class ConsoleVariable {
     void LoadLegacy();
 
   private:
+    // Audio reads CVars while the game/menu inserts and updates them. Hold this
+    // through both map lookup and value access; locking only lookup is unsafe.
+    mutable std::recursive_mutex mMutex;
+    // Caller must hold mMutex. Borrowed strings retain their existing contract.
+    const CVar* Peek(const char* name) const;
     struct TransparentStringHash {
         using is_transparent = void;
         size_t operator()(std::string_view sv) const noexcept {

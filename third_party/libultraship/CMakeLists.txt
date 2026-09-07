@@ -39,7 +39,13 @@ set(ADDITIONAL_LIB_INCLUDES "")
 
 # ========= Configuration Options =========
 option(INCLUDE_MPQ_SUPPORT "Enable StormLib and MPQ archive support" OFF)
-option(GBI_UCODE "Specify the GBI ucode version" F3DEX_GBI_2)
+# This is a preprocessor symbol, not a boolean: option() turns the default
+# into OFF and makes XML display lists use the wrong command encoding.
+set(GBI_UCODE "F3DEX_GBI_2" CACHE STRING "Specify the GBI ucode version")
+set_property(CACHE GBI_UCODE PROPERTY STRINGS F3DEX_GBI_2 F3DEX_GBI F3DLP_GBI F3D_OLD)
+if(NOT GBI_UCODE MATCHES "^(F3DEX_GBI_2|F3DEX_GBI|F3DLP_GBI|F3D_OLD)$")
+    message(FATAL_ERROR "Invalid GBI_UCODE '${GBI_UCODE}'. Set -DGBI_UCODE:STRING=F3DEX_GBI_2, F3DEX_GBI, F3DLP_GBI, or F3D_OLD.")
+endif()
 
 # =========== Dependencies =============
 if (CMAKE_SYSTEM_NAME STREQUAL "Windows")

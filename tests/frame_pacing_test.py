@@ -113,6 +113,7 @@ struct State {
     void* bottomTarget = reinterpret_cast<void*>(1);
     uint64_t busyTickAccumulator = 0, waitTickAccumulator = 0, frameStartTick = 0;
     uint64_t frameEndTick = 0, loopTickAccumulator = 0;
+    uint64_t frameLoopTicks = 0, frameBeginWaitTicks = 0;
     uint64_t sampleFrameSplitCount = 0, linearHeapFlushFrameCount = 0;
 };
 struct GfxRenderingAPICitro3D {

@@ -16,14 +16,8 @@ O2rArchive::~O2rArchive() {
     Close();
 }
 
-zip_t* O2rArchive::GetZipHandle() {
-    std::lock_guard<std::mutex> lock(mPoolMutex);
-    if (!mZipArchivePool.empty()) {
-        zip_t* handle = mZipArchivePool.back();
-        mZipArchivePool.pop_back();
-        return handle;
-    }
 #ifdef __3DS__
+static zip_t* OpenBufferedReadArchive(const std::string& path) {
     // SoH-3DS: libzip reads entries through stdio, and newlib sizes a FILE's
     // buffer from st_blksize, which the sdmc devoptab reports as 512 bytes -
     // so every stored entry came in as size/512 separate FS_ReadFile IPC
@@ -31,7 +25,7 @@ zip_t* O2rArchive::GetZipHandle() {
     // load hundreds of thousands. Own the FILE, give it a 64 KiB buffer, and
     // hand it to libzip; zip_open_from_source takes ownership of the source
     // and the file is closed with the handle (ZIP_SOURCE_FREE -> fclose).
-    FILE* file = std::fopen(GetPath().c_str(), "rb");
+    FILE* file = std::fopen(path.c_str(), "rb");
     if (file == nullptr) {
         return nullptr;
     }
@@ -46,18 +40,33 @@ zip_t* O2rArchive::GetZipHandle() {
         zip_source_free(source); // also closes the FILE
     }
     return handle;
+}
+#endif
+
+zip_t* O2rArchive::GetZipHandle() {
+#ifdef __3DS__
+    // The caller holds mReadMutex until the entry has been read and closed.
+    // Each extra libzip handle duplicates the entire archive directory.
+    return mZipArchive;
 #else
+    std::lock_guard<std::mutex> lock(mPoolMutex);
+    if (!mZipArchivePool.empty()) {
+        zip_t* handle = mZipArchivePool.back();
+        mZipArchivePool.pop_back();
+        return handle;
+    }
     return zip_open(GetPath().c_str(), ZIP_RDONLY, nullptr);
 #endif
 }
 
 void O2rArchive::ReleaseZipHandle(zip_t* handle) {
+#ifndef __3DS__
     if (handle == nullptr) {
         return;
     }
-
     std::lock_guard<std::mutex> lock(mPoolMutex);
     mZipArchivePool.push_back(handle);
+#endif
 }
 
 std::shared_ptr<File> O2rArchive::LoadFile(uint64_t hash) {
@@ -67,6 +76,9 @@ std::shared_ptr<File> O2rArchive::LoadFile(uint64_t hash) {
 }
 
 std::shared_ptr<File> O2rArchive::LoadFile(const std::string& filePath) {
+#ifdef __3DS__
+    const std::lock_guard<std::mutex> readLock(mReadMutex);
+#endif
     zip_t* zipArchive = GetZipHandle();
     if (zipArchive == nullptr) {
         SPDLOG_TRACE("Failed to open file {} from zip archive {}. Archive not open.", filePath, GetPath());
@@ -139,7 +151,12 @@ std::shared_ptr<File> O2rArchive::LoadFile(const std::string& filePath) {
 }
 
 bool O2rArchive::Open() {
+#ifdef __3DS__
+    const std::lock_guard<std::mutex> readLock(mReadMutex);
+    mZipArchive = OpenBufferedReadArchive(GetPath());
+#else
     mZipArchive = zip_open(GetPath().c_str(), ZIP_CREATE, nullptr);
+#endif
     if (mZipArchive == nullptr) {
         SPDLOG_ERROR("Failed to load zip file \"{}\"", GetPath());
         return false;
@@ -167,6 +184,9 @@ bool O2rArchive::Open() {
 }
 
 bool O2rArchive::Close() {
+#ifdef __3DS__
+    const std::lock_guard<std::mutex> readLock(mReadMutex);
+#endif
     bool success = true;
 
     if (mZipArchive != nullptr) {
@@ -190,10 +210,23 @@ bool O2rArchive::Close() {
 }
 
 bool O2rArchive::WriteFile(const std::string& filePath, const std::vector<uint8_t>& data) {
+#ifdef __3DS__
+    const std::lock_guard<std::mutex> readLock(mReadMutex);
+#endif
     if (!mZipArchive) {
         SPDLOG_ERROR("Cannot write to zip: Archive is not open.");
         return false;
     }
+
+#ifdef __3DS__
+    // Reads use a buffered, read-only source. Replace it under the same lock
+    // for writes, so readers never see a stale or concurrently modified ZIP.
+    zip_discard(mZipArchive);
+    mZipArchive = zip_open(GetPath().c_str(), ZIP_CREATE, nullptr);
+    if (mZipArchive == nullptr) {
+        return false;
+    }
+#endif
 
     // Create a new zip source from the data buffer
     zip_source_t* source = zip_source_buffer(mZipArchive, data.data(), data.size(), 0);
@@ -215,6 +248,7 @@ bool O2rArchive::WriteFile(const std::string& filePath, const std::vector<uint8_
         SPDLOG_ERROR("Failed to save changes to zip archive: {} ({})", zip_error_strerror(error),
                      zip_error_code_zip(error));
         zip_discard(mZipArchive); // Close zip and discard changes
+        mZipArchive = nullptr;
         return false;
     }
 
@@ -229,8 +263,12 @@ bool O2rArchive::WriteFile(const std::string& filePath, const std::vector<uint8_
 
     SPDLOG_INFO("Successfully wrote file: {}", filePath);
 
-    // Reopen the zip file so that it may continued to be used by libultraship
+    // Reopen after committing; 3DS returns to buffered, shared reads.
+#ifdef __3DS__
+    mZipArchive = OpenBufferedReadArchive(GetPath());
+#else
     mZipArchive = zip_open(GetPath().c_str(), ZIP_CREATE, nullptr);
+#endif
     if (mZipArchive == nullptr) {
         SPDLOG_ERROR("Failed to reopen zip file after writing.");
         return false;

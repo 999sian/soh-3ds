@@ -1912,13 +1912,23 @@ void SohMenu::AddMenuEnhancements() {
     AddWidget(path, "Misc", WIDGET_SEPARATOR_TEXT);
     AddWidget(path, "No Clip", WIDGET_CVAR_CHECKBOX)
         .CVar(CVAR_CHEAT("NoClip"))
+#ifdef __3DS__
+        .Options(CheckboxOptions().Tooltip("Walk through walls. Floors and gravity still apply."));
+#else
         .Options(CheckboxOptions().Tooltip("Allows you to walk through walls."));
+#endif
     AddWidget(path, "Climb Everything", WIDGET_CVAR_CHECKBOX)
         .CVar(CVAR_CHEAT("ClimbEverything"))
         .Options(CheckboxOptions().Tooltip("Makes every surface in the game climbable."));
+#ifdef __3DS__
+    AddWidget(path, "Moon Jump", WIDGET_CVAR_CHECKBOX)
+        .CVar(CVAR_CHEAT("MoonJumpOnL"))
+        .Options(CheckboxOptions().Tooltip("Hold the button assigned to N64 L in Controls (ZL by default)."));
+#else
     AddWidget(path, "Moon Jump on L", WIDGET_CVAR_CHECKBOX)
         .CVar(CVAR_CHEAT("MoonJumpOnL"))
         .Options(CheckboxOptions().Tooltip("Holding L makes you float into the air."));
+#endif
     AddWidget(path, "No ReDead/Gibdo Freeze", WIDGET_CVAR_CHECKBOX)
         .CVar(CVAR_CHEAT("NoRedeadFreeze"))
         .Options(

@@ -302,10 +302,15 @@ def main():
         directory.mkdir(parents=True, exist_ok=True)
         source = directory / 'test.cpp'
         source.write_text(cpp)
-        for enabled in ([1] if args.benchmark else [0, 1]):
+        for enabled in ([1] if args.benchmark else [None, 0, 1]):
             executable = directory / ('test-' + str(enabled))
-            flags = ['-std=c++17', '-O2', '-Wall', '-Wextra', '-fno-fast-math', '-ffp-contract=off',
-                     '-DSOH3DS_EXPERIMENT_COMMON_PACK=' + str(enabled)]
+            flags = ['-std=c++17', '-O2', '-Wall', '-Wextra', '-fno-fast-math', '-ffp-contract=off']
+            if enabled is None:
+                # Check the shipped default, as well as both explicit A/B modes.
+                source.write_text(cpp + '\nstatic_assert(SOH3DS_EXPERIMENT_COMMON_PACK == 0, "Vertex optimization must remain off by default");\n')
+            else:
+                source.write_text(cpp)
+                flags += ['-DSOH3DS_EXPERIMENT_COMMON_PACK=' + str(enabled)]
             if args.sanitize:
                 flags += ['-fsanitize=address,undefined', '-fno-omit-frame-pointer', '-g']
             subprocess.run([os.environ.get('CXX', 'g++'), *flags, str(source), '-o', str(executable)], check=True)

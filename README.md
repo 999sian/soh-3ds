@@ -38,9 +38,32 @@ existing bindings, sensitivity, and deadzone settings are preserved. No separate
 settings file is required. Use **Controls → Enable C-stick camera** to turn
 free-look on or off; a saved Off preference is preserved.
 
+## Debug logging
+
+Logging is off by default. Open the bottom-screen **Settings** tab, select
+the **Debug** page, and toggle **Logging** when you need diagnostics. Changes
+apply in-game and are saved. **Frame Timing**, **Detailed Profiling**, and
+**Texture Tracing** are separate options, also off by default, and only run
+while Logging is on. Old logging flag files no longer enable these recordings.
+
+Logging can cause stutter. Turn it off after testing. Normal on-screen setup
+progress and error messages remain visible with logging off.
+
+## Cheats and Mirror Mode
+
+Open the bottom-screen **Settings** tab and select **Cheats**. **Moon Jump**
+uses the button assigned to **N64 L** in Controls: **ZL** in the default and
+OoT3D layouts. Hold it to rise. **No Clip** lets Link walk through walls;
+floors and gravity still apply. **Infinite Ammo** refills ammunition to your
+current equipment capacity; it does not grant missing weapons or upgrades.
+
+**Mirrored World** is on the **Extra Modes** page. Choose **Always** to mirror
+the current world, or another mode to select which scenes are mirrored.
+
 ## Host build and tests
 
-Requires CMake 3.20 or newer, a C++20 compiler, Python 3, and Bash. From the
+Requires CMake 3.20 or newer, a C++20 compiler, Python 3, Bash, and the libzip
+development package (for the archive regression test). From the
 repository root:
 
 ```sh
@@ -66,6 +89,7 @@ cmake -S third_party/libultraship -B third_party/libultraship/build-3ds \
   -DCMAKE_TOOLCHAIN_FILE="$PWD/cmake/3DS.cmake" \
   -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_PREFIX_PATH="$DEVKITPRO/portlibs/3ds" \
+  -DGBI_UCODE:STRING=F3DEX_GBI_2 \
   -DINCLUDE_MPQ_SUPPORT=OFF -DGFX_DEBUG_DISASSEMBLER=OFF \
   -DDISABLE_DLL_LOADER=ON
 cmake --build third_party/libultraship/build-3ds -j2
@@ -76,8 +100,9 @@ cmake -S . -B build-3ds-mk \
 ./scripts/build-3ds.sh
 ```
 
-For subsequent builds, use `scripts/build-3ds.sh`: it rebuilds libultraship before
-linking the game, preventing stale library changes from being omitted.
+For subsequent builds, use `scripts/build-3ds.sh`: it configures libultraship for
+OoT's F3DEX2 graphics commands and rebuilds it before linking the game, preventing
+stale library changes from being omitted.
 Set `SOH_BUILD_JOBS` to change its parallel build limit (default: 2).
 
 `scripts/prepare-setup-romfs.py --help` describes the inputs required to stage

@@ -7,6 +7,9 @@
 #include "soh/ResourceManagerHelpers.h"
 #include "UIWidgets.hpp"
 #include <ship/controller/controldeck/ControlDeck.h>
+#ifdef __3DS__
+#include <ship/utils/logging_3ds.h>
+#endif
 
 extern "C" {
 #include "include/z64audio.h"
@@ -125,6 +128,31 @@ void SohMenu::UpdateLanguageMap(std::map<int32_t, const char*>& languageMap) {
 void SohMenu::AddMenuSettings() {
     // Add Settings Menu
     AddMenuEntry("Settings", CVAR_SETTING("Menu.SettingsSidebarSection"));
+#ifdef __3DS__
+    AddSidebarEntry("Settings", "Debug", 1);
+    WidgetPath debugPath = { "Settings", "Debug", SECTION_COLUMN_1 };
+    AddWidget(debugPath, "Logging", WIDGET_CVAR_CHECKBOX)
+        .CVar("gDeveloperTools.DebugLogging")
+        .RaceDisable(false)
+        .Callback([](WidgetInfo&) { if (Soh3dsApplyLoggingSettings) Soh3dsApplyLoggingSettings(); })
+        .Options(CheckboxOptions().DefaultValue(0).Tooltip(
+            "Record diagnostic logs. Off by default. Logging can cause stutter; turn it off after testing."));
+    AddWidget(debugPath, "Frame Timing", WIDGET_CVAR_CHECKBOX)
+        .CVar("gDeveloperTools.FrameLogging")
+        .RaceDisable(false)
+        .Callback([](WidgetInfo&) { if (Soh3dsApplyLoggingSettings) Soh3dsApplyLoggingSettings(); })
+        .Options(CheckboxOptions().DefaultValue(0).Tooltip("Record individual frame timings while Logging is on."));
+    AddWidget(debugPath, "Detailed Profiling", WIDGET_CVAR_CHECKBOX)
+        .CVar("gDeveloperTools.ProfileLogging")
+        .RaceDisable(false)
+        .Callback([](WidgetInfo&) { if (Soh3dsApplyLoggingSettings) Soh3dsApplyLoggingSettings(); })
+        .Options(CheckboxOptions().DefaultValue(0).Tooltip("Measure rendering functions while Logging is on."));
+    AddWidget(debugPath, "Texture Tracing", WIDGET_CVAR_CHECKBOX)
+        .CVar("gDeveloperTools.TextureLogging")
+        .RaceDisable(false)
+        .Callback([](WidgetInfo&) { if (Soh3dsApplyLoggingSettings) Soh3dsApplyLoggingSettings(); })
+        .Options(CheckboxOptions().DefaultValue(0).Tooltip("Record texture activity while Logging is on."));
+#endif
     AddSidebarEntry("Settings", "General", 2);
     WidgetPath path = { "Settings", "General", SECTION_COLUMN_1 };
 

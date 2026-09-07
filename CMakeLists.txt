@@ -254,13 +254,24 @@ else()
     add_test(NAME interpolation_retention COMMAND test_interpolation_recording)
     add_test(NAME frame_pacing COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/frame_pacing_test.py)
     add_test(NAME cvar_string COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/cvar_string_test.py)
+    add_test(NAME cvar_concurrency COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/cvar_concurrency_test.py)
     add_test(NAME renderer_profile COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/renderer_profile_test.py)
+    add_test(NAME frame_trace COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/frame_trace_test.py)
+    add_test(NAME heartbeat_capture COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/heartbeat_capture_test.py)
+    add_test(NAME debug_logging COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/debug_logging_test.py)
     add_test(NAME combiner_key COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/combiner_key_test.py)
     add_test(NAME triangle_pair COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/triangle_pair_test.py)
     add_test(NAME packed_vertex COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/packed_vertex_test.py)
     add_test(NAME gpu_command COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/gpu_command_test.py)
     add_test(NAME save_transactions COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/save_transaction_test.sh)
     add_test(NAME settings_commit COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/settings_commit_test.py)
+    add_test(NAME enhancement_link COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/enhancement_link_test.py)
+    add_test(NAME xml_display_list_ucode COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/xml_display_list_ucode_test.py)
+    add_test(NAME mirrored_world COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/mirrored_world_test.py)
+    add_test(NAME cheat_controls_3ds COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/cheat_controls_3ds_test.py)
+    add_test(NAME archive_memory_3ds COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/archive_memory_3ds_test.py)
+    add_test(NAME noclip_collision COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/noclip_collision_test.py)
+    add_test(NAME infinite_ammo COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/infinite_ammo_test.py)
     add_test(NAME sun_depth_coordinates COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/sun_depth_test.py)
     add_test(NAME framebuffer_sampling COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/framebuffer_sampling_test.py)
     add_test(NAME randomizer_entropy COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/randomizer_entropy_test.py)
@@ -417,6 +428,7 @@ if(N3DS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/shipwright/soh/src")
     # place that sees both the decomp headers and the plain struct src/pica/
     # reads, which keeps libultra's types out of the renderer.
     add_executable(soh_3ds tests/soh_3ds_main.cpp
+        src/compat3ds/logging_3ds.cpp
         src/compat3ds/sleep_3ds.cpp
         src/compat3ds/excluded_stubs.cpp
         src/compat3ds/network_stubs.cpp)
@@ -435,7 +447,11 @@ if(N3DS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/shipwright/soh/src")
         # enhancement layer are mutually recursive, and libultraship reaches the
         # PICA200 backend through factory hooks that live in the renderer library.
         -Wl,--start-group
-        soh_enhancement soh_decomp ${SOH3DS_GFX_LIB}
+        # Many enhancements register only through a static constructor. Keep
+        # their objects even when nothing directly references a function in
+        # them, or the menu exposes switches whose hooks never reach the game.
+        -Wl,--whole-archive soh_enhancement -Wl,--no-whole-archive
+        soh_decomp ${SOH3DS_GFX_LIB}
         soh3ds_setup_core soh3ds_torch_oot
         "${LUS_BUILD}/src/libultraship.a"
         -Wl,--end-group

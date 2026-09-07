@@ -1900,15 +1900,17 @@ s32 BgCheck_CheckWallImpl(CollisionContext* colCtx, u16 xpFlags, Vec3f* posResul
     s32 bgId2;
     f32 nx, ny, nz; // unit normal of polygon
 
+    // A skipped check is still a no-collision result. Callers can inspect
+    // wallPoly even when the return value is false; do not retain an old wall.
+    *outBgId = BGCHECK_SCENE;
+    *outPoly = NULL;
+    *posResult = *posNext;
     if (!GameInteractor_Should(VB_PERFORM_WALL_COLLISION_CHECK, true, actor)) {
         return false;
     }
 
     result = false;
-    *outBgId = BGCHECK_SCENE;
-    *outPoly = NULL;
     lookupTbl = colCtx->lookupTbl;
-    *posResult = *posNext;
     dx = posNext->x - posPrev->x;
     dy = posNext->y - posPrev->y;
     dz = posNext->z - posPrev->z;

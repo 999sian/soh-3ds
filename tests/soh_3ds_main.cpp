@@ -7,6 +7,8 @@
 // Kept separate from the decomp so the upstream diff stays minimal.
 
 #include <3ds.h>
+#include <ship/utils/logging_3ds.h>
+#include <spdlog/spdlog.h>
 
 #include <unistd.h>
 #include <sys/iosupport.h>
@@ -179,7 +181,7 @@ Soh3dsWrapThread __wrap_threadCreate(void (*entry)(void*), void* arg, size_t sta
         // owning thread after the fact.
         fprintf(stderr, "soh-3ds thread: entry=%p block=%p size=%u prio=%d core=%d\n", (void*)entry, (void*)t,
                 (unsigned)stack_size, prio, core_id);
-        FILE* f = fopen("bootinfo.txt", "a");
+        FILE* f = Soh3dsLoggingEnabled(SOH3DS_LOG_GENERAL) ? fopen("bootinfo.txt", "a") : nullptr;
         if (f != NULL) {
             fprintf(f, "thread entry=%p block=%p size=%u prio=%d core=%d\n", (void*)entry, (void*)t,
                     (unsigned)stack_size, prio, core_id);
@@ -215,6 +217,10 @@ static void SohCtrUnwindSelfTest() {
 //   + "fatal"            -> FATAL reached; died in the 5 s message window
 //   + "teardown-entered" -> died at or after teardown entry (debris)
 static int sFatalFd = -1;
+extern "C" void Soh3dsConfigureCrashLogging(bool enabled) {
+    if (sFatalFd >= 0) { close(sFatalFd); sFatalFd = -1; }
+    if (enabled) sFatalFd = open("lastfatal.txt", O_WRONLY | O_CREAT | O_APPEND, 0666);
+}
 
 static void SohCtrFatalMark(const char* stage, const char* detail = "") {
     if (sFatalFd < 0) {
@@ -268,18 +274,18 @@ static _Unwind_Reason_Code SohCtrTraceFrameToMarker(struct _Unwind_Context* ctx,
     return _URC_NO_REASON;
 }
 
-// Route stderr through svcOutputDebugString before anything logs.
+// Keep diagnostic streams silent until the saved Debug setting is loaded.
 //
 // SoH logs through spdlog, whose default sink is stdout - invisible to an
-// emulator. consoleDebugInit(debugDevice_SVC) redirects stderr to
-// svcOutputDebugString, which Azahar records in its log, so the game's own
-// startup diagnostics become readable.
+// emulator. The logging controller selects svcOutputDebugString only after
+// explicit opt-in. Visible startup/setup progress still uses its console.
 //
 // constructor(101) runs before the normal static initialisers (which start at
 // 65535/default), so this is in place before the enhancement layer's
 // load-time tables are built and before spdlog's first message.
 __attribute__((constructor(101))) static void SohCtrEarlyLogInit() {
-    consoleDebugInit(debugDevice_SVC);
+    Soh3dsConfigureDebugOutput();
+    devoptab_list[STD_OUT] = devoptab_list[STD_ERR];
     // Unbuffered: a crash must not swallow the lines leading up to it.
     setvbuf(stderr, nullptr, _IONBF, 0);
     setvbuf(stdout, nullptr, _IONBF, 0);
@@ -345,7 +351,7 @@ __attribute__((constructor(101))) static void SohCtrEarlyLogInit() {
     // to SD (stderr is invisible on hardware): after one boot,
     // sdmc:/3ds/soh/bootinfo.txt holds the console's real map, FTP-readable.
     {
-        FILE* info = fopen("bootinfo.txt", "w");
+        FILE* info = Soh3dsLoggingEnabled(SOH3DS_LOG_GENERAL) ? fopen("bootinfo.txt", "w") : nullptr;
         // SoH-3DS: crash-classification marker, ARMED HERE at boot. It is
         // written from the FATAL path while the heap is exhausted, so it
         // must never allocate: the fd is opened now and held open for the
@@ -353,7 +359,8 @@ __attribute__((constructor(101))) static void SohCtrEarlyLogInit() {
         // "armed" line is the capability check - if it is missing, the
         // marker system itself failed and the file proves NOTHING about the
         // crash. See SohCtrFatalMark().
-        sFatalFd = open("lastfatal.txt", O_WRONLY | O_CREAT | O_TRUNC, 0666);
+        if (Soh3dsLoggingEnabled(SOH3DS_LOG_GENERAL))
+            sFatalFd = open("lastfatal.txt", O_WRONLY | O_CREAT | O_TRUNC, 0666);
         SohCtrFatalMark("armed");
         u32 addr = 0x00100000;
         int regions = 0;
@@ -362,7 +369,7 @@ __attribute__((constructor(101))) static void SohCtrEarlyLogInit() {
                     (unsigned)(sGrantedHeapSize / (1024 * 1024)), 66u,
                     (unsigned)(__ctru_linear_heap_size / (1024 * 1024)), (unsigned)(__stacksize__ / 1024));
         }
-        while (addr < 0x40000000 && regions < 40) {
+        while (Soh3dsLoggingEnabled(SOH3DS_LOG_GENERAL) && addr < 0x40000000 && regions < 40) {
             MemInfo mem;
             PageInfo page;
             if (R_FAILED(svcQueryMemory(&mem, &page, addr))) {
@@ -493,6 +500,9 @@ void Soh3dsRestoreConsoleOutput(void);
 
 void Soh3dsBootConsoleReady(void) {
     if (!sBootConsoleUp) {
+        // Archive loading precedes Context::InitLogging. Silence spdlog's
+        // initial stdout logger before exposing the boot progress console.
+        spdlog::set_level(Soh3dsLoggingEnabled(SOH3DS_LOG_GENERAL) ? spdlog::level::info : spdlog::level::off);
         consoleInit(GFX_BOTTOM, nullptr);
         // consoleInit installs the console devoptab only on its first process
         // call. Native setup consumed that call and later routed stdout back
@@ -502,16 +512,16 @@ void Soh3dsBootConsoleReady(void) {
         // stderr back on svcOutputDebugString or every later diagnostic
         // (init traces, gfx heartbeat, crash breadcrumbs) vanishes from the
         // emulator log. stdout stays on the console for the boot text.
-        consoleDebugInit(debugDevice_SVC);
+        Soh3dsConfigureDebugOutput();
         setvbuf(stderr, nullptr, _IONBF, 0);
         sBootConsoleUp = true;
-        printf("Ship of Harkinian 3DS\n---------------------\n");
+        printf("Ship of Harkinian 3DS\n---------------------\nStarting game...\n");
     }
 }
 
 void Soh3dsBootStatus(const char* msg) {
     fprintf(stderr, "soh-3ds init: %s\n", msg);
-    if (sBootConsoleUp) {
+    if (sBootConsoleUp && Soh3dsLoggingEnabled(SOH3DS_LOG_GENERAL)) {
         printf("%s\n", msg);
         gfxFlushBuffers();
     }
@@ -539,6 +549,7 @@ void Soh3dsBootConsoleRelease(void) {
 // an interrupt that fails to persist.
 // Gated on sdmc:/3ds/soh/isg.flag (cwd is that directory); absent = inert.
 static int Soh3dsProbeArmed(void) {
+    if (!Soh3dsLoggingEnabled(SOH3DS_LOG_GENERAL)) return 0;
     static int armed = -1;
     if (armed < 0) {
         FILE* flag = fopen("isg.flag", "r");

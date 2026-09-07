@@ -12,6 +12,7 @@
 #endif
 
 #include <3ds.h>
+#include <ship/utils/logging_3ds.h>
 
 #include <algorithm>
 #include <cerrno>
@@ -284,7 +285,8 @@ bool ExtractSelectedRom(const std::string& selected, const std::vector<Soh3dsSet
 void ReleaseSetupUi() {
     // consoleInit redirects stdout at the framebuffer. Restore it to the SVC
     // debug stream before gfxExit invalidates that framebuffer.
-    consoleDebugInit(debugDevice_SVC);
+    if (Soh3dsConfigureDebugOutput) Soh3dsConfigureDebugOutput();
+    else consoleDebugInit(debugDevice_NULL);
     devoptab_list[STD_OUT] = devoptab_list[STD_ERR];
     setvbuf(stdout, nullptr, _IONBF, 0);
     gfxExit();
@@ -306,7 +308,8 @@ extern "C" bool Soh3dsEnsureGameData() {
     gSetupConsoleOutput = devoptab_list[STD_OUT];
     // Keep setup text on stdout while restoring stderr diagnostics to the
     // SVC sink installed by the early constructor.
-    consoleDebugInit(debugDevice_SVC);
+    if (Soh3dsConfigureDebugOutput) Soh3dsConfigureDebugOutput();
+    else consoleDebugInit(debugDevice_NULL);
     setvbuf(stderr, nullptr, _IONBF, 0);
 #ifndef SOH3DS_EMULATOR_SAFE
     osSetSpeedupEnable(true);
@@ -314,7 +317,8 @@ extern "C" bool Soh3dsEnsureGameData() {
 
     while (R_FAILED(romfsInit())) {
         if (!WaitRetry("The bundled setup files could not be mounted. Reinstall the complete 3DSX or CIA, then press A.")) {
-            consoleDebugInit(debugDevice_SVC);
+            if (Soh3dsConfigureDebugOutput) Soh3dsConfigureDebugOutput();
+            else consoleDebugInit(debugDevice_NULL);
             devoptab_list[STD_OUT] = devoptab_list[STD_ERR];
             gfxExit();
             return false;

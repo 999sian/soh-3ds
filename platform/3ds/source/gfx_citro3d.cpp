@@ -1,5 +1,7 @@
 #include "gfx_citro3d.h"
 #include "depth_snapshot_3ds.h"
+#include "frame_trace_3ds.hpp"
+#include "ship/utils/logging_3ds.h"
 #include "fast/backends/gfx_profile_3ds.h"
 
 #include <3ds.h>
@@ -99,16 +101,23 @@ extern "C" void Soh3dsProfileEnd(unsigned section, uint64_t start) {
 }
 static FILE* Soh3dsOpenPerformanceLog() {
     sRenderProfileEnabled = false;
-    FILE* flag = std::fopen("perftrace.flag", "rb");
-    if (flag == nullptr) return nullptr;
-    std::fclose(flag);
-    FILE* log = std::fopen("perf.csv", "wb");
+    if (!Soh3dsLoggingEnabled(SOH3DS_LOG_GENERAL)) return nullptr;
+    FILE* log = std::fopen("perf.csv", "ab");
     if (log == nullptr) return nullptr;
-    flag = std::fopen("perfprofile.flag", "rb");
-    if (flag != nullptr) {
-        std::fclose(flag);
-        sRenderProfileEnabled = true;
+    sRenderProfileEnabled = Soh3dsLoggingEnabled(SOH3DS_LOG_PROFILE);
+    return log;
+}
+static FILE* Soh3dsPerformanceLog() {
+    // React to the menu without filesystem probes during ordinary frames.
+    static FILE* log = nullptr;
+    static bool wasEnabled = false;
+    const bool enabled = Soh3dsLoggingEnabled(SOH3DS_LOG_GENERAL);
+    if (enabled != wasEnabled) {
+        if (log) std::fclose(log);
+        log = enabled ? Soh3dsOpenPerformanceLog() : nullptr;
+        wasEnabled = enabled;
     }
+    sRenderProfileEnabled = log && Soh3dsLoggingEnabled(SOH3DS_LOG_PROFILE);
     return log;
 }
 // Frame pacing state (see EndFrame). RunCommands checks the current LCD
@@ -210,8 +219,9 @@ uint8_t FloatColorToByte(float value) {
 }
 
 #ifndef SOH3DS_EXPERIMENT_COMMON_PACK
-// Backend-only candidate; override with 0 for the matched control build.
-#define SOH3DS_EXPERIMENT_COMMON_PACK 1
+// Rolled back after reported graphical issues. Use the original generic
+// packer in normal builds; the experimental path is for explicit A/B tests.
+#define SOH3DS_EXPERIMENT_COMMON_PACK 0
 #endif
 
 void PackGenericVertices(const float* drawVertices, PackedVertex* packedVertices, size_t vertexCount,
@@ -910,6 +920,8 @@ struct GfxRenderingAPICitro3D::Impl {
     // CPU scopes; waitTickAccumulator reports swap/GX/pacing waits separately.
     uint64_t frameEndTick = 0;
     uint64_t loopTickAccumulator = 0;
+    uint64_t frameLoopTicks = 0;
+    uint64_t frameBeginWaitTicks = 0;
     // Snapshot is allocated only after this target is queried. Storage is
     // reused; framebuffer snapshots are released with their GPU storage.
     DepthSnapshot3DS depthSnapshot;
@@ -2362,6 +2374,7 @@ void GfxRenderingAPICitro3D::StartFrame() {
         const uint64_t now = svcGetSystemTick();
         if (mImpl->frameEndTick != 0) {
             mImpl->loopTickAccumulator += now - mImpl->frameEndTick;
+            mImpl->frameLoopTicks += now - mImpl->frameEndTick;
         }
         mImpl->frameEndTick = 0; // do not recount on a failed FrameBegin retry
     }
@@ -2376,7 +2389,8 @@ void GfxRenderingAPICitro3D::StartFrame() {
         return;
     }
     mImpl->frameStartTick = svcGetSystemTick();
-    mImpl->waitTickAccumulator += mImpl->frameStartTick - beginWaitStart;
+    mImpl->frameBeginWaitTicks = mImpl->frameStartTick - beginWaitStart;
+    mImpl->waitTickAccumulator += mImpl->frameBeginWaitTicks;
     sSwapReadyVblank = C3D_FrameCounter(0) + 1;
     if (trace) {
         std::fprintf(stderr, "soh-3ds gfx: post-FrameBegin ok\n");
@@ -2506,9 +2520,38 @@ void GfxRenderingAPICitro3D::EndFrame() {
     // Measure the whole submission interval, excluding only its own wait.
     // This includes presentation, flush and submission without erasing work
     // accumulated from earlier frames.
-    mImpl->busyTickAccumulator += svcGetSystemTick() - mImpl->frameStartTick - pacingWait;
+    const uint64_t submissionTick = svcGetSystemTick();
+    const uint64_t renderTicks = submissionTick - mImpl->frameStartTick - pacingWait;
+    mImpl->busyTickAccumulator += renderTicks;
     mImpl->waitTickAccumulator += pacingWait;
     if (needsLinearHeapFlush) ++mImpl->linearHeapFlushFrameCount;
+
+    // SoH-3DS DIAGNOSTIC: opt-in, fixed-memory submission capture for hitches.
+    // Keep SD write cost visible in the following interval. Up to 59 trailing
+    // samples remain in RAM on exit; complete batches are flushed to disk.
+    static FILE* frameTraceFile = nullptr;
+    static Soh3dsFrameTrace frameTrace(nullptr);
+    static bool wasFrameTraceEnabled = false;
+    const bool frameTraceEnabled = Soh3dsLoggingEnabled(SOH3DS_LOG_FRAMES);
+    if (frameTraceEnabled != wasFrameTraceEnabled) {
+        if (frameTraceFile) std::fclose(frameTraceFile);
+        frameTraceFile = frameTraceEnabled ? std::fopen("frametimes.bin", "wb") : nullptr;
+        frameTrace = Soh3dsFrameTrace(frameTraceFile);
+        wasFrameTraceEnabled = frameTraceEnabled;
+    }
+    static uint64_t submissionOrdinal = 0;
+    static uint64_t previousTraceTicks = 0;
+    ++submissionOrdinal;
+    if (frameTrace.Enabled()) {
+        const uint64_t traceStart = svcGetSystemTick();
+        frameTrace.Record({submissionOrdinal, submissionTick, renderTicks, mImpl->frameBeginWaitTicks,
+                           pacingWait, mImpl->frameLoopTicks, mImpl->textureCacheUploadCount, sFramesDropped,
+                           Soh3dsGameTicks != nullptr ? Soh3dsGameTicks() : 0,
+                           static_cast<uint64_t>(Soh3dsTargetFps != nullptr ? Soh3dsTargetFps() : 60),
+                           C3D_FrameCounter(0), previousTraceTicks});
+        previousTraceTicks = svcGetSystemTick() - traceStart;
+    }
+    mImpl->frameLoopTicks = 0;
 
     // SoH-3DS DIAGNOSTIC: dump the presented top screen once, at a fixed
     // frame, so rendering bugs can be inspected as real pixels instead of
@@ -2527,7 +2570,7 @@ void GfxRenderingAPICitro3D::EndFrame() {
         }
         // Dump a series so a black transition frame cannot waste the run.
         ++sFbFrame;
-        if (sFbArmed == 1 && sFbFrame % 240 == 0 && sFbFrame <= 2400) {
+        if (Soh3dsLoggingEnabled(SOH3DS_LOG_GENERAL) && sFbArmed == 1 && sFbFrame % 240 == 0 && sFbFrame <= 2400) {
             u16 fbw = 0, fbh = 0;
             u8* fb = gfxGetFramebuffer(GFX_TOP, GFX_LEFT, &fbw, &fbh);
             if (fb != nullptr) {
@@ -2572,7 +2615,8 @@ void GfxRenderingAPICitro3D::EndFrame() {
     // line per 60 presented frames carries the CPU/GPU/command/texture/vertex
     // and memory metrics the measured optimization work compares against.
     static unsigned sFrames = 0;
-    if (++sFrames % 60 == 0) {
+    FILE* performanceLog = Soh3dsPerformanceLog();
+    if (++sFrames % 60 == 0 && performanceLog != nullptr) {
         // SYSCLOCK_ARM11 = 268,111,856 ticks/s -> ticks per microsecond.
         const uint64_t busyMicroseconds = mImpl->busyTickAccumulator / 268u;
         mImpl->busyTickAccumulator = 0;
@@ -2669,7 +2713,7 @@ void GfxRenderingAPICitro3D::EndFrame() {
 
         // Basic FPS capture is independent of detailed per-draw profiling.
         // With no capture flag, normal runs perform no diagnostic file I/O.
-        static FILE* sPerformanceLog = Soh3dsOpenPerformanceLog();
+        FILE* sPerformanceLog = performanceLog;
         static unsigned sPerformanceLogSamples = 0;
         if (sPerformanceLog != nullptr && recordLength > 0) {
             std::fputs(record, sPerformanceLog);

@@ -29,6 +29,9 @@ code = r'''
 #include <sys/stat.h>
 #include <unistd.h>
 #include "fast/backends/gfx_profile_3ds.h"
+#include "ship/utils/logging_3ds.h"
+unsigned testLoggingFlags = 0;
+extern "C" unsigned Soh3dsLoggingFlags() { return testLoggingFlags; }
 uint64_t clockTicks = 100;
 unsigned clockReads = 0;
 uint64_t svcGetSystemTick() { ++clockReads; return ++clockTicks; }
@@ -48,6 +51,8 @@ int main() {
     assert(!sRenderProfileEnabled);
     std::remove("perfprofile.flag");
     flag = std::fopen("perftrace.flag", "wb"); assert(flag); std::fclose(flag);
+    assert(Soh3dsOpenPerformanceLog() == nullptr); // legacy flags cannot opt in
+    testLoggingFlags = SOH3DS_LOG_GENERAL;
     auto capture = Soh3dsOpenPerformanceLog(); assert(capture);
     assert(!sRenderProfileEnabled);
     { Soh3dsProfileScope scope(Soh3dsProfileSection::Triangle); }
@@ -55,6 +60,7 @@ int main() {
     assert(clockReads == 0 && sPackCoverage.totalBatches == 0);
     std::fclose(capture); std::remove("perf.csv");
     flag = std::fopen("perfprofile.flag", "wb"); assert(flag); std::fclose(flag);
+    testLoggingFlags |= SOH3DS_LOG_PROFILE;
     capture = Soh3dsOpenPerformanceLog(); assert(capture);
     assert(sRenderProfileEnabled);
     std::fclose(capture); std::remove("perf.csv");
@@ -63,6 +69,14 @@ int main() {
     assert(!sRenderProfileEnabled);
     assert(rmdir("perf.csv") == 0);
     std::remove("perftrace.flag"); std::remove("perfprofile.flag");
+    testLoggingFlags = 0;
+    assert(Soh3dsPerformanceLog() == nullptr);
+    testLoggingFlags = SOH3DS_LOG_GENERAL | SOH3DS_LOG_PROFILE;
+    assert(Soh3dsPerformanceLog() != nullptr && sRenderProfileEnabled);
+    testLoggingFlags = SOH3DS_LOG_GENERAL;
+    assert(Soh3dsPerformanceLog() != nullptr && !sRenderProfileEnabled);
+    testLoggingFlags = 0;
+    assert(Soh3dsPerformanceLog() == nullptr && !sRenderProfileEnabled);
     for (unsigned i = 0; i < static_cast<unsigned>(Soh3dsProfileSection::Count); ++i) {
         Soh3dsProfileScope scope(static_cast<Soh3dsProfileSection>(i));
     }

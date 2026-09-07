@@ -26,6 +26,9 @@
 #define _LANGUAGE_C
 #endif
 #include "fast/debug/GfxDebugger.h"
+#ifdef __3DS__
+#include "ship/utils/logging_3ds.h"
+#endif
 #include "fast/types.h"
 #include <string>
 
@@ -1309,12 +1312,14 @@ void Interpreter::ImportTextureRaw(int tile, bool importReplacement) {
 // Keep source identities on cache misses so a later carpet hit can be matched
 // to the image originally uploaded under that renderer ID. No flag, no writes.
 static FILE* TextureTraceFile() {
-    static FILE* trace = []() -> FILE* {
-        FILE* flag = fopen("texturetrace.flag", "r");
-        if (flag == nullptr) return nullptr;
-        fclose(flag);
-        return fopen("texturetrace.log", "w");
-    }();
+    static FILE* trace = nullptr;
+    static bool wasEnabled = false;
+    const bool enabled = Soh3dsLoggingEnabled(SOH3DS_LOG_TEXTURES);
+    if (enabled != wasEnabled) {
+        if (trace) fclose(trace);
+        trace = enabled ? fopen("texturetrace.log", "a") : nullptr;
+        wasEnabled = enabled;
+    }
     return trace;
 }
 

@@ -75,6 +75,10 @@ class O2rArchive final : virtual public Archive {
     zip_t* GetZipHandle();
     /** @brief Returns a zip_t* handle back to the pool for reuse. */
     void ReleaseZipHandle(zip_t* handle);
+#ifdef __3DS__
+    // Serialize complete entry reads and writes on the single ZIP handle.
+    std::mutex mReadMutex;
+#endif
     zip_t* mZipArchive;
     std::mutex mPoolMutex;
     std::vector<zip_t*> mZipArchivePool;

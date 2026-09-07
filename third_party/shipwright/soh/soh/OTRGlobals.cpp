@@ -15,6 +15,9 @@ OTRAudioSync audio;
 #include <chrono>
 #include <optional>
 #include <spdlog/common.h>
+#ifdef __3DS__
+#include <ship/utils/logging_3ds.h>
+#endif
 #include <imgui.h>
 
 #include "ResourceManagerHelpers.h"
@@ -917,6 +920,10 @@ void OTRGlobals::Initialize() {
     context->InitConsoleVariables();
     auto logLevel =
         static_cast<spdlog::level::level_enum>(CVarGetInteger(CVAR_DEVELOPER_TOOLS("LogLevel"), defaultLogLevel));
+#ifdef __3DS__
+    if (Soh3dsApplyLoggingSettings) Soh3dsApplyLoggingSettings();
+    logLevel = Soh3dsLoggingEnabled(SOH3DS_LOG_GENERAL) ? spdlog::level::info : spdlog::level::off;
+#endif
     SOH3DS_INIT_TRACE("Initialize: InitLogging");
     context->InitLogging(logLevel, logLevel);
     Ship::Context::GetRawInstance()->GetLogger()->set_pattern("[%H:%M:%S.%e] [%s:%#] [%^%l%$] %v");
