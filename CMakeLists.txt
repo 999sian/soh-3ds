@@ -276,6 +276,9 @@ else()
     add_test(NAME framebuffer_sampling COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/framebuffer_sampling_test.py)
     add_test(NAME randomizer_entropy COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/randomizer_entropy_test.py)
     add_test(NAME randomizer_timer COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/randomizer_timer_test.py)
+    add_test(NAME randomizer_boot_settings_3ds COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/randomizer_boot_settings_3ds_test.py)
+    add_test(NAME randomizer_settings_3ds COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/randomizer_settings_3ds_test.py)
+    add_test(NAME randomizer_reachability_filter COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/randomizer_reachability_filter_test.py)
     add_test(NAME settings_font COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/settings_font_test.py)
     add_test(NAME quick_items_3ds COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/quick_items_3ds_test.py)
     add_test(NAME controls_3ds COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/controls_3ds_test.py)
@@ -415,6 +418,12 @@ if(N3DS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/shipwright/soh/src")
     target_compile_definitions(soh_enhancement PRIVATE
         F3DEX_GBI_2 NDEBUG INCLUDE_GAME_PRINTF LOG_LEVEL_GAME_PRINTS=6)
     target_compile_options(soh_enhancement PRIVATE -w -fpermissive -Os)
+    # Generation spends most of its time evaluating reachability and inventory.
+    # Optimize these small hot files for speed; retain -Os for the wider port.
+    foreach(_rando_hot 3drando/fill logic location_access)
+        set_source_files_properties("${SOH_DIR}/soh/Enhancements/randomizer/${_rando_hot}.cpp"
+                                    PROPERTIES COMPILE_OPTIONS "-O2")
+    endforeach()
     set_target_properties(soh_enhancement PROPERTIES CXX_STANDARD 20 EXCLUDE_FROM_ALL TRUE)
     # --- PC-free first-run setup --------------------------------------------
     include(cmake/Setup3DS.cmake)

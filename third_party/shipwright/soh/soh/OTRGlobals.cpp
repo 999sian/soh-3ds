@@ -1905,7 +1905,14 @@ extern "C" void InitOTR(int argc, char* argv[]) {
     // single largest InitOTR cost (6.4 s of a 21 s boot, measured) - for an
     // ImGui menu that never draws on this port. The SohMenu object itself is
     // still created (SetupMenu) since UpdateAudioBackendObjects needs it.
-    // Audited before gating: AddMenuElements additionally runs every
+    // Seed definitions are functional initialization, even without widgets:
+    // desktop normally creates them inside AddMenuRandomizer. Without this,
+    // options have empty names/default zero, seeds omit settings, and new
+    // randomizer saves start with one heart (zero-based Starting Hearts).
+    SOH3DS_INIT_TRACE("Rando::CreateOptions (no ImGui)");
+    Rando::Settings::GetInstance()->CreateOptions();
+    Rando::Settings::GetInstance()->UpdateAllOptions();
+    // AddMenuElements additionally runs every
     // MenuInit::GetInitFuncs() callback; all ten registrants
     // (ResolutionEditor, Anchor menu, four rando trackers, mod_menu,
     // CosmeticsEditor, Mapper, SohInputEditorWindow) are Register*Widgets

@@ -144,15 +144,24 @@ void Soh3dsRandoMenu_Draw(GameState* state) {
         width = Rm_TextWidth(pageText);
         Rm_Text(state, pageText, (320 - width) / 2, 14, 205, 198, 180, width);
     } else {
-        Rm_Text(state, view.title, 10, 9, 240, 232, 208, 300);
+        Rm_Text(state, "Back", 10, 9, 240, 232, 208, 58);
+        Rm_Text(state, view.title, 82, 9, 240, 232, 208, 228);
     }
     for (i = 0; i < view.rowCount; ++i) {
         int y = RANDO_ROW_Y + i * RANDO_ROW_H + 8;
         u8 color = view.rows[i].disabled ? 125 : 240;
-        Rm_Text(state, view.rows[i].label, 14, y, color, color, color > 20 ? color - 20 : 0, 154);
+        Rm_Text(state, view.rows[i].label, 14, view.settings ? y - 5 : y,
+                color, color, color > 20 ? color - 20 : 0,
+                view.settings || !view.rows[i].value[0] ? 292 : 154);
         if (view.rows[i].value[0] != '\0') {
             int width = Rm_TextWidth(view.rows[i].value);
-            Rm_Text(state, view.rows[i].value, 306 - (width < 134 ? width : 134), y, 233, 206, 142, 134);
+            if (view.settings) {
+                Rm_Text(state, "<", 178, y + 6, color, color, color, 10);
+                Rm_Text(state, view.rows[i].value, 26, y + 6, color, color, color, 144);
+                Rm_Text(state, ">", 284, y + 6, color, color, color, 10);
+            } else {
+                Rm_Text(state, view.rows[i].value, 306 - (width < 134 ? width : 134), y, 233, 206, 142, 134);
+            }
         }
     }
     Rm_Text(state, view.status, 10, 223, view.busy ? 233 : 205, view.busy ? 206 : 198, view.busy ? 142 : 180, 300);

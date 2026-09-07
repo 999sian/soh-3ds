@@ -284,6 +284,8 @@ class Option {
      * "X" symbol.
      */
     void Disable(std::string text);
+    bool IsDisabled() const { return disabled; }
+    const std::string& GetDisabledText() const { return disabledText; }
     bool IsCategory(OptionCategory category) const;
 
     void AddWidget(WidgetPath& path);

@@ -12,6 +12,7 @@
 #include "soh/Enhancements/debugger/performanceTimer.h"
 #include "soh/util.h"
 
+#include <bitset>
 #include <vector>
 #include <list>
 #include <set>
@@ -550,16 +551,17 @@ std::vector<RandomizerCheck> ReachabilitySearch(const std::vector<RandomizerChec
             ProcessRegion(RegionTable(gals.regionPool[i]), gals, ignore);
         }
     } while (gals.logicUpdated);
-    std::erase_if(gals.accessibleLocations, [&targetLocations, ctx, calculatingAvailableChecks](RandomizerCheck loc) {
+    // Build membership once: this filter runs for every assumed-fill search.
+    // Keep the accessible list's order because placement consumes it using RNG.
+    std::bitset<RC_MAX> targetMembership;
+    for (RandomizerCheck loc : targetLocations) {
+        targetMembership.set(static_cast<size_t>(loc));
+    }
+    std::erase_if(gals.accessibleLocations, [&targetMembership, ctx, calculatingAvailableChecks](RandomizerCheck loc) {
         if (ctx->GetItemLocation(loc)->GetPlacedRandomizerGet() != RG_NONE && !calculatingAvailableChecks) {
             return false;
         }
-        for (RandomizerCheck allowedLocation : targetLocations) {
-            if (loc == allowedLocation) {
-                return false;
-            }
-        }
-        return true;
+        return !targetMembership.test(static_cast<size_t>(loc));
     });
     return gals.accessibleLocations;
 }

@@ -1,4 +1,5 @@
 #include "RandomizerMenu3DS.h"
+#include "RandomizerSettings3DS.h"
 
 #include <algorithm>
 #include <array>
@@ -83,7 +84,7 @@ void Copy(char* out, size_t size, const std::string& value) {
 
 #if defined(__3DS__) || defined(SOH3DS_RANDO_MENU_TEST)
 
-enum MenuPage { PAGE_SETUP, PAGE_FILES };
+enum MenuPage { PAGE_SETUP, PAGE_FILES, PAGE_GROUPS, PAGE_SETTINGS, PAGE_HELP };
 
 struct MenuState {
     bool open = false;
@@ -91,6 +92,9 @@ struct MenuState {
     int selected = 0;
     int filePage = 0;
     int preset = 1;
+    int group = 0;
+    int setting = 0;
+    std::vector<std::string> help;
     char seed[SOH3DS_RANDO_SEED_MAX + 1] = {};
     std::string status;
     std::vector<Soh3dsRandoSeedFile> files;
@@ -164,8 +168,81 @@ void EditSeed() {
 #endif
 }
 
+int RowCount() {
+    switch (sMenu.page) {
+        case PAGE_SETUP: return 7;
+        case PAGE_FILES: return static_cast<int>(sMenu.files.size());
+        case PAGE_GROUPS: return Soh3dsRandoSettings_GroupCount();
+        case PAGE_SETTINGS: return Soh3dsRandoSettings_Count(sMenu.group);
+        case PAGE_HELP: return static_cast<int>(sMenu.help.size());
+    }
+    return 0;
+}
+
+void Back() {
+    switch (sMenu.page) {
+        case PAGE_HELP:
+            sMenu.page = PAGE_SETTINGS;
+            sMenu.selected = sMenu.setting;
+            sMenu.status = "Left/right: edit   A: details   B: back";
+            break;
+        case PAGE_SETTINGS:
+            sMenu.page = PAGE_GROUPS;
+            sMenu.selected = sMenu.group;
+            break;
+        case PAGE_GROUPS:
+            sMenu.page = PAGE_SETUP;
+            sMenu.selected = 4;
+            break;
+        case PAGE_FILES:
+            sMenu.page = PAGE_SETUP;
+            sMenu.selected = 2;
+            sMenu.status = "File selection cancelled";
+            break;
+        default: Soh3dsRandoMenu_Close(); return;
+    }
+    sMenu.filePage = sMenu.selected / SOH3DS_RANDO_VISIBLE_ROWS;
+}
+
+void AdjustSetting(int direction) {
+    if (Randomizer_IsGenerating()) {
+        sMenu.status = ResultText(SOH3DS_RANDO_BUSY);
+        return;
+    }
+    if (Soh3dsRandoSettings_Adjust(sMenu.group, sMenu.selected, direction))
+        sMenu.status = "Saved. Applies to the next generated seed.";
+    else
+        sMenu.status = "Unavailable. A: details";
+}
+
+void ShowHelp() {
+    Soh3dsRandoMenuRow row{};
+    Soh3dsRandoSettings_Read(sMenu.group, sMenu.selected, &row);
+    sMenu.help.clear();
+    std::string text = std::string(row.label) + "\nCurrent: " + row.value + "\n" +
+                       Soh3dsRandoSettings_Description(sMenu.group, sMenu.selected);
+    // Keep all of long names/descriptions accessible on the small screen.
+    while (!text.empty()) {
+        // Font glyphs advance at most 9 pixels; 32 fit within 292 pixels.
+        size_t end = std::min<size_t>(32, text.size());
+        const size_t newline = text.find('\n');
+        if (newline <= end) end = newline;
+        else if (end < text.size()) {
+            const size_t space = text.rfind(' ', end);
+            if (space != std::string::npos && space > 0) end = space;
+        }
+        sMenu.help.push_back(text.substr(0, end));
+        text.erase(0, end);
+        if (!text.empty() && (text.front() == ' ' || text.front() == '\n')) text.erase(0, 1);
+    }
+    sMenu.setting = sMenu.selected;
+    sMenu.page = PAGE_HELP;
+    sMenu.selected = sMenu.filePage = 0;
+    sMenu.status = "Up/down: scroll   B: back";
+}
+
 void ActivateSetupRow() {
-    if (Randomizer_IsGenerating() && sMenu.selected != 4) {
+    if (Randomizer_IsGenerating()) {
         sMenu.status = ResultText(SOH3DS_RANDO_BUSY);
         return;
     }
@@ -190,7 +267,19 @@ void ActivateSetupRow() {
             break;
         }
         case 4:
-            Soh3dsRandoMenu_Close();
+            Soh3dsRandoSettings_Refresh();
+            sMenu.page = PAGE_GROUPS;
+            sMenu.selected = sMenu.filePage = 0;
+            sMenu.status = "A: open   B: back";
+            break;
+        case 5:
+            sMenu.status = Soh3dsRandoSettings_Randomize() ? "Settings randomized and saved" : ResultText(SOH3DS_RANDO_BUSY);
+            break;
+        case 6:
+            if (Soh3dsRandoSettings_Reset()) {
+                sMenu.preset = 3;
+                sMenu.status = "Default settings restored and saved";
+            } else sMenu.status = ResultText(SOH3DS_RANDO_FAILED);
             break;
     }
 }
@@ -228,13 +317,11 @@ void HandleTouch(bool& accept) {
         return;
     }
     sMenu.touchDown = false;
-    if (sMenu.page == PAGE_FILES && sMenu.touchY < 28) {
+    if (sMenu.touchY < 28) {
         if (sMenu.touchX < 80) {
-            sMenu.page = PAGE_SETUP;
-            sMenu.selected = 2;
-            sMenu.status = "File selection cancelled";
-        } else if (sMenu.touchX >= 240 && !sMenu.files.empty()) {
-            const int pageCount = (static_cast<int>(sMenu.files.size()) + SOH3DS_RANDO_VISIBLE_ROWS - 1) /
+            Back();
+        } else if (sMenu.page != PAGE_SETUP && sMenu.touchX >= 240 && RowCount() > 0) {
+            const int pageCount = (RowCount() + SOH3DS_RANDO_VISIBLE_ROWS - 1) /
                                   SOH3DS_RANDO_VISIBLE_ROWS;
             if (sMenu.touchX < 280) {
                 sMenu.filePage = std::max(0, sMenu.filePage - 1);
@@ -252,7 +339,7 @@ void HandleTouch(bool& accept) {
         return;
     }
     if (sMenu.page == PAGE_SETUP) {
-        if (visible < 5) {
+        if (visible < 7) {
             sMenu.selected = visible;
             if (visible == 0 && sMenu.touchX >= 166) {
                 if (Randomizer_IsGenerating()) {
@@ -268,13 +355,13 @@ void HandleTouch(bool& accept) {
         }
         return;
     }
-    if (!sMenu.files.empty()) {
-        const int first = sMenu.filePage * SOH3DS_RANDO_VISIBLE_ROWS;
-        const int picked = first + visible;
-        if (picked < static_cast<int>(sMenu.files.size())) {
-            sMenu.selected = picked;
-            accept = true;
-        }
+    const int picked = sMenu.filePage * SOH3DS_RANDO_VISIBLE_ROWS + visible;
+    if (picked < RowCount()) {
+        sMenu.selected = picked;
+        if (sMenu.page == PAGE_SETTINGS && sMenu.touchX >= 166 &&
+            (sMenu.touchY - kRowsY) % kRowHeight >= 12)
+            AdjustSetting(sMenu.touchX < 236 ? -1 : 1);
+        else accept = true;
     }
 }
 
@@ -436,34 +523,32 @@ extern "C" void Soh3dsRandoMenu_Update(int accept, int cancel, int up, int down,
     }
     bool activate = accept != 0;
     HandleTouch(activate);
-    if (cancel) {
-        if (sMenu.page == PAGE_FILES) {
-            sMenu.page = PAGE_SETUP;
-            sMenu.selected = 2;
-            sMenu.filePage = 0;
-            sMenu.status = "File selection cancelled";
-        } else {
-            Soh3dsRandoMenu_Close();
-        }
-        return;
-    }
-    const int count = sMenu.page == PAGE_SETUP ? 5 : std::max(1, static_cast<int>(sMenu.files.size()));
+    if (cancel) { Back(); return; }
+    const int count = std::max(1, RowCount());
     if (up != down) {
         sMenu.selected = (sMenu.selected + (down ? 1 : count - 1)) % count;
-        if (sMenu.page == PAGE_FILES) {
-            sMenu.filePage = sMenu.selected / SOH3DS_RANDO_VISIBLE_ROWS;
-        }
+        if (sMenu.page != PAGE_SETUP) sMenu.filePage = sMenu.selected / SOH3DS_RANDO_VISIBLE_ROWS;
     }
     if (sMenu.page == PAGE_SETUP && sMenu.selected == 0 && left != right && !Randomizer_IsGenerating()) {
         sMenu.preset = (sMenu.preset + (right ? 1 : static_cast<int>(kPresets.size()) - 1)) % kPresets.size();
     } else if (sMenu.page == PAGE_SETUP && sMenu.selected == 0 && left != right) {
         sMenu.status = ResultText(SOH3DS_RANDO_BUSY);
     }
+    if (sMenu.page == PAGE_SETTINGS && left != right) AdjustSetting(right ? 1 : -1);
     if (activate) {
-        if (sMenu.page == PAGE_SETUP) {
-            ActivateSetupRow();
-        } else {
-            ActivateFileRow();
+        switch (sMenu.page) {
+            case PAGE_SETUP: ActivateSetupRow(); break;
+            case PAGE_FILES: ActivateFileRow(); break;
+            case PAGE_GROUPS:
+                if (RowCount() > 0) {
+                    sMenu.group = sMenu.selected;
+                    sMenu.page = PAGE_SETTINGS;
+                    sMenu.selected = sMenu.filePage = 0;
+                    sMenu.status = "Left/right: edit   A: details   B: back";
+                }
+                break;
+            case PAGE_SETTINGS: ShowHelp(); break;
+            case PAGE_HELP: Back(); break;
         }
     }
 }
@@ -474,8 +559,13 @@ extern "C" void Soh3dsRandoMenu_GetView(Soh3dsRandoMenuView* out) {
     }
     std::memset(out, 0, sizeof(*out));
     out->busy = Randomizer_IsGenerating();
-    out->picker = sMenu.page == PAGE_FILES;
+    out->picker = sMenu.page != PAGE_SETUP;
+    out->settings = sMenu.page == PAGE_SETTINGS;
+    out->help = sMenu.page == PAGE_HELP;
     Copy(out->title, sizeof(out->title), sMenu.page == PAGE_SETUP ? "RANDOMIZER SETTINGS" : "LOAD SEED JSON");
+    if (sMenu.page == PAGE_GROUPS) Copy(out->title, sizeof(out->title), "ALL SETTINGS");
+    if (sMenu.page == PAGE_SETTINGS) Copy(out->title, sizeof(out->title), Soh3dsRandoSettings_GroupName(sMenu.group));
+    if (sMenu.page == PAGE_HELP) Copy(out->title, sizeof(out->title), "SETTING DETAILS");
     if (out->busy) {
         Copy(out->status, sizeof(out->status), std::string(Soh3dsRandoProgress_StageName()) + "  " +
                                                    std::to_string(Soh3dsRandoProgress_ElapsedSeconds()) + "s");
@@ -491,16 +581,33 @@ extern "C" void Soh3dsRandoMenu_GetView(Soh3dsRandoMenuView* out) {
         Copy(out->status, sizeof(out->status), sMenu.status);
     }
     if (sMenu.page == PAGE_SETUP) {
-        static const char* labels[5] = { "Preset", "Seed", "Seed file", "Generate", "Back" };
-        out->rowCount = 5;
+        static const char* labels[7] = { "Preset", "Seed", "Seed file", "Generate", "All settings", "Randomize settings", "Reset to defaults" };
+        out->rowCount = 7;
         out->selectedRow = sMenu.selected;
         for (int i = 0; i < out->rowCount; ++i) {
             Copy(out->rows[i].label, sizeof(out->rows[i].label), labels[i]);
-            out->rows[i].disabled = out->busy && i != 4;
+            out->rows[i].disabled = out->busy;
         }
         Copy(out->rows[0].value, sizeof(out->rows[0].value), std::string("< ") + kPresets[sMenu.preset] + " >");
         Copy(out->rows[1].value, sizeof(out->rows[1].value), sMenu.seed[0] == '\0' ? "Random" : sMenu.seed);
         Copy(out->rows[2].value, sizeof(out->rows[2].value), "Choose...");
+        return;
+    }
+    if (sMenu.page != PAGE_FILES) {
+        const int count = RowCount();
+        out->pageCount = std::max(1, (count + SOH3DS_RANDO_VISIBLE_ROWS - 1) / SOH3DS_RANDO_VISIBLE_ROWS);
+        out->pageIndex = sMenu.filePage;
+        const int first = sMenu.filePage * SOH3DS_RANDO_VISIBLE_ROWS;
+        out->rowCount = std::min(SOH3DS_RANDO_VISIBLE_ROWS, count - first);
+        out->selectedRow = sMenu.selected - first;
+        for (int i = 0; i < out->rowCount; ++i) {
+            if (sMenu.page == PAGE_GROUPS)
+                Copy(out->rows[i].label, sizeof(out->rows[i].label), Soh3dsRandoSettings_GroupName(first + i));
+            else if (sMenu.page == PAGE_SETTINGS) {
+                Soh3dsRandoSettings_Read(sMenu.group, first + i, &out->rows[i]);
+                out->rows[i].disabled |= out->busy;
+            } else Copy(out->rows[i].label, sizeof(out->rows[i].label), sMenu.help[first + i]);
+        }
         return;
     }
     if (sMenu.files.empty()) {

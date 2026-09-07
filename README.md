@@ -9,6 +9,14 @@ it is not a finished release. The main hardware target is New Nintendo 3DS / New
 Nintendo 2DS XL. CIA packaging requests the extended memory available on those
 systems; the development `.3dsx` does not provide the same memory configuration.
 
+## Download
+
+[**v0.1.0-alpha.3 prerelease**](https://github.com/999sian/soh-3ds/releases/tag/v0.1.0-alpha.3)
+includes the native randomizer settings menu, Reset to defaults, the starting-heart
+fix and faster seed generation. Install the CIA with FBI on New 3DS / New 2DS XL;
+the release page includes a QR code and checksums. See [randomizer controls and
+benchmark details](RANDOMIZER-3DS.md).
+
 ## Game data
 
 Supply your own supported Ocarina of Time ROM. ROMs and extracted game archives
@@ -29,6 +37,19 @@ using it. A valid archive lets setup skip game extraction.
 **Archive format:** this port uses `.o2r`, not the legacy `.otr` format produced
 by older SoH releases. Renaming an `.otr` file to `.o2r` will not convert it;
 generate a compatible `.o2r` with SoH instead.
+
+## Randomizer on 3DS
+
+Choose **Randomizer → All settings** to edit seed settings, starting inventory,
+logic tricks, excluded locations and randomizer enhancements on the console.
+Press **A** on a setting for its full description. See [the randomizer guide](RANDOMIZER-3DS.md)
+for touch controls and presets. **Reset to defaults** restores the randomizer
+settings and enhancements, including three starting hearts.
+
+**Starting Hearts** is under **Starting Inventory / Other** and defaults to **3**.
+This update fixes missing setting definitions on 3DS, which previously generated
+seeds with zero-valued settings and one starting heart. Generate a new seed and
+start a new save after updating; existing seeds and saves keep their old settings.
 
 ## Camera controls
 

@@ -39,8 +39,8 @@ typedef struct Soh3dsRandoSeedFile {
 } Soh3dsRandoSeedFile;
 
 typedef struct Soh3dsRandoMenuRow {
-    char label[SOH3DS_RANDO_NAME_MAX];
-    char value[SOH3DS_RANDO_NAME_MAX];
+    char label[256];
+    char value[256];
     int disabled;
 } Soh3dsRandoMenuRow;
 
@@ -52,6 +52,8 @@ typedef struct Soh3dsRandoMenuView {
     int selectedRow;
     int busy;
     int picker;
+    int settings;
+    int help;
     int pageIndex;
     int pageCount;
 } Soh3dsRandoMenuView;

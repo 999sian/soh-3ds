@@ -27,6 +27,7 @@ def function_body(source: str, marker: str) -> str:
 
 HARNESS = r'''
 #include "RandomizerMenu3DS.h"
+#include "RandomizerSettings3DS.h"
 
 #include <cassert>
 #include <chrono>
@@ -43,6 +44,23 @@ static int touchHeld = 0;
 static int touchX = 0;
 static int touchY = 0;
 extern "C" const char gBuildVersion[] = "9.9.9-test";
+
+static int hearts = 3;
+static int randomizations = 0;
+static int resets = 0;
+extern "C" int Soh3dsRandoSettings_Reset() { ++resets; return 1; }
+extern "C" int Soh3dsRandoSettings_Randomize() { ++randomizations; return 1; }
+extern "C" void Soh3dsRandoSettings_Refresh() {}
+extern "C" int Soh3dsRandoSettings_GroupCount() { return 1; }
+extern "C" const char* Soh3dsRandoSettings_GroupName(int) { return "Starting inventory"; }
+extern "C" int Soh3dsRandoSettings_Count(int) { return 9; }
+extern "C" void Soh3dsRandoSettings_Read(int, int, Soh3dsRandoMenuRow* out) {
+    *out = {};
+    std::strcpy(out->label, "Starting Hearts");
+    std::snprintf(out->value, sizeof(out->value), "%d", hearts);
+}
+extern "C" const char* Soh3dsRandoSettings_Description(int, int) { return "Starting heart containers. WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW"; }
+extern "C" int Soh3dsRandoSettings_Adjust(int, int, int direction) { hearts += direction; return 1; }
 
 static int ImportSeed(const char* path);
 
@@ -200,6 +218,74 @@ int main(int argc, char** argv) {
     Soh3dsRandoProgress_Finish(0);
     Soh3dsRandoMenu_GetView(&view);
     assert(std::strstr(view.status, "Failed") != nullptr);
+    // Full settings entry, category paging, edits, busy gating, and Back.
+    Soh3dsRandoMenu_Open();
+    Soh3dsRandoMenu_GetView(&view);
+    assert(view.rowCount == 7);
+    assert(std::string(view.rows[4].label) == "All settings");
+    Tap(100, 142);
+    Soh3dsRandoMenu_GetView(&view);
+    assert(view.picker && std::string(view.rows[0].label) == "Starting inventory");
+    Tap(100, 38);
+    Soh3dsRandoMenu_GetView(&view);
+    assert(std::string(view.rows[0].label) == "Starting Hearts");
+    assert(std::string(view.rows[0].value) == "3");
+    Soh3dsRandoMenu_Update(0, 0, 0, 0, 1, 0);
+    Soh3dsRandoMenu_GetView(&view);
+    assert(std::string(view.rows[0].value) == "2");
+    menuBusy = true;
+    Soh3dsRandoMenu_Update(0, 0, 0, 0, 1, 0);
+    Soh3dsRandoMenu_GetView(&view);
+    assert(view.rows[0].disabled && std::string(view.rows[0].value) == "2");
+    menuBusy = false;
+    Tap(280, 48); // Value arrow increments.
+    Soh3dsRandoMenu_GetView(&view);
+    assert(std::string(view.rows[0].value) == "3");
+    Tap(180, 48); // Value arrow decrements.
+    Soh3dsRandoMenu_GetView(&view);
+    assert(std::string(view.rows[0].value) == "2");
+    Tap(280, 36); // The entire upper name line opens details, never changes value.
+    Soh3dsRandoMenu_GetView(&view);
+    assert(hearts == 2);
+    assert(view.help && std::string(view.rows[0].label) == "Starting Hearts");
+    assert(view.pageCount > 1);
+    for (int i = 0; i < view.rowCount; ++i) assert(std::strlen(view.rows[i].label) <= 32);
+    Tap(300, 10);
+    Soh3dsRandoMenu_GetView(&view);
+    assert(view.help && view.pageIndex == 1);
+    Soh3dsRandoMenu_Update(0, 1, 0, 0, 0, 0);
+    Soh3dsRandoMenu_GetView(&view);
+    assert(view.settings && view.selectedRow == 0);
+    // D-pad can reach every row, including crossing a page boundary.
+    for (int i = 0; i < 7; ++i) Soh3dsRandoMenu_Update(0, 0, 0, 1, 0, 0);
+    Soh3dsRandoMenu_GetView(&view);
+    assert(view.pageIndex == 1 && view.selectedRow == 0);
+    Tap(250, 10);
+    Tap(300, 10);
+    Soh3dsRandoMenu_GetView(&view);
+    assert(view.pageIndex == 1 && view.rowCount == 2);
+    Tap(30, 10);
+    Soh3dsRandoMenu_GetView(&view);
+    assert(std::string(view.rows[0].label) == "Starting inventory");
+    Soh3dsRandoMenu_Update(0, 1, 0, 0, 0, 0);
+    Soh3dsRandoMenu_GetView(&view);
+    assert(!view.picker && view.selectedRow == 4);
+    Tap(100, 168); // Randomize settings action.
+    assert(randomizations == 1);
+    menuBusy = true;
+    Tap(100, 168);
+    assert(randomizations == 1);
+    Tap(100, 194); // Reset is blocked during generation.
+    assert(resets == 0 && Soh3dsRandoMenu_IsOpen());
+    menuBusy = false;
+    Soh3dsRandoMenu_GetView(&view);
+    assert(std::string(view.rows[6].label) == "Reset to defaults");
+    Tap(100, 194);
+    assert(resets == 1 && Soh3dsRandoMenu_IsOpen());
+    menuBusy = true;
+    Tap(20, 10); // Header Back remains available during generation.
+    assert(!Soh3dsRandoMenu_IsOpen());
+    menuBusy = false;
     Soh3dsRandoMenu_Close();
 
     std::cout << "3DS randomizer menu: bounded picker, validation, busy gate and progress pass\n";
