@@ -1,5 +1,6 @@
 #include "gfx_citro3d.h"
 #include "depth_snapshot_3ds.h"
+#include "decal_depth_3ds.h"
 #include "frame_trace_3ds.hpp"
 #include "ship/utils/logging_3ds.h"
 #include "fast/backends/gfx_profile_3ds.h"
@@ -1356,7 +1357,9 @@ void GfxRenderingAPICitro3D::SetZmodeDecal(bool decal) {
     // Reverse that range onto [1, 0] for GPU_GREATER and the zero-cleared
     // depth buffer. An offset of +1 saturates nearly every fragment at 1 and
     // makes later geometry fail the depth test.
-    C3D_DepthMap(true, -1.0f, decal ? -0.001f : 0.0f);
+    // GREATER needs a positive bias. DrawTriangles adds the per-triangle slope;
+    // a large fixed bias makes shield decals show through nearby geometry.
+    C3D_DepthMap(true, -1.0f, decal ? kDecalDepthUnits3DS : 0.0f);
 }
 
 void GfxRenderingAPICitro3D::SetViewport(int x, int y, int width, int height) {
@@ -1828,9 +1831,20 @@ void GfxRenderingAPICitro3D::DrawTriangles(float bufVbo[], size_t bufVboLen, siz
             mImpl->textures[sampledId].lastDrawnFrame = mImpl->frameOrdinal;
         }
     }
-    C3D_DrawArrays(GPU_TRIANGLES, static_cast<int>(firstVertex), static_cast<int>(vertexCount));
-    ++mImpl->drawCallCount;
-    mImpl->sampleFogDrawCount += program->fog ? 1u : 0u;
+    if (mImpl->decal) {
+        for (size_t vertex = firstVertex; vertex < firstVertex + vertexCount; vertex += 3) {
+            const auto* triangle = mImpl->packedVertices + vertex;
+            C3D_DepthMap(true, -1.0f, DecalDepthBias3DS(triangle[0].position, triangle[1].position,
+                triangle[2].position, mImpl->viewportWidth, mImpl->viewportHeight));
+            C3D_DrawArrays(GPU_TRIANGLES, static_cast<int>(vertex), 3);
+            ++mImpl->drawCallCount;
+            mImpl->sampleFogDrawCount += program->fog ? 1u : 0u;
+        }
+    } else {
+        C3D_DrawArrays(GPU_TRIANGLES, static_cast<int>(firstVertex), static_cast<int>(vertexCount));
+        ++mImpl->drawCallCount;
+        mImpl->sampleFogDrawCount += program->fog ? 1u : 0u;
+    }
     mImpl->triangleCount += vertexCount / 3;
     mImpl->packedVertexCount += vertexCount;
     mImpl->framePeakPackedVertices = std::max(mImpl->framePeakPackedVertices, mImpl->packedVertexCount);
@@ -2124,7 +2138,7 @@ void GfxRenderingAPICitro3D::RestoreFast3DState() {
     UploadProjectionForActiveTarget();
 
     C3D_CullFace(GPU_CULL_NONE);
-    C3D_DepthMap(true, -1.0f, mImpl->decal ? -0.001f : 0.0f);
+    C3D_DepthMap(true, -1.0f, mImpl->decal ? kDecalDepthUnits3DS : 0.0f);
     C3D_DepthTest(mImpl->depthTest, mImpl->depthTest ? GPU_GREATER : GPU_ALWAYS,
                   static_cast<GPU_WRITEMASK>(GPU_WRITE_COLOR |
                                              (mImpl->depthWrite ? GPU_WRITE_DEPTH : 0)));

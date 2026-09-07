@@ -3198,6 +3198,15 @@ void Interpreter::GfxDpSetEnvColor(uint8_t r, uint8_t g, uint8_t b, uint8_t a) {
 }
 
 void Interpreter::GfxDpSetPrimColor(uint8_t m, uint8_t l, uint8_t r, uint8_t g, uint8_t b, uint8_t a) {
+#ifdef __3DS__
+    // PICA carries SHADE in its one varying colour and PRIMITIVE in a TEV
+    // constant. Keep material changes out of the same batch (Mirror Shield
+    // reflective face and red body share a shader/texture but change tint).
+    if (mRdp->prim_lod_fraction != l || mRdp->prim_color.r != r || mRdp->prim_color.g != g ||
+        mRdp->prim_color.b != b || mRdp->prim_color.a != a) {
+        Flush();
+    }
+#endif
     mRdp->prim_lod_fraction = l;
     mRdp->prim_color.r = r;
     mRdp->prim_color.g = g;
