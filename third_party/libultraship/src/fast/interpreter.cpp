@@ -175,6 +175,9 @@ void Interpreter::Flush() {
 ShaderProgram* Interpreter::LookupOrCreateShaderProgram(uint64_t id0, uint64_t id1) {
     ShaderProgram* prg = mRapi->LookupShader(id0, id1);
     if (prg == nullptr) {
+        // Creation also binds the new program. Pending vertices still use
+        // the old layout, including any texture-clamp attributes.
+        Flush();
         mRapi->UnloadShader(mRenderingState.mShaderProgram);
         prg = mRapi->CreateAndLoadNewShader(id0, id1);
         mRenderingState.mShaderProgram = prg;
@@ -2443,10 +2446,18 @@ void Interpreter::DeriveTriState() {
 
     // Per-vertex UV path folded to u' = (u/32 * shiftScale - uls/4 [+0.5]) / texW
     // = u * uMul + uAdd, with the half-texel term kept separate because it
-    // depends on is_rect. Division by a zero width gave inf before; still does.
+    // depends on is_rect. Shader layouts can include an extra coordinate set
+    // for two-cycle sampling even when the combiner never imports that tile.
     for (int t = 0; t < 2; t++) {
         ts.effective_tile[t] = effective_tile[t];
         if (!ts.usedTextures[t]) {
+            continue;
+        }
+        if (!comb->usedTextures[t]) {
+            // Its dimensions were not derived above. Supply neutral finite
+            // coordinates instead of reading uninitialized stack values.
+            ts.uMul[t] = ts.vMul[t] = ts.uAdd[t] = ts.vAdd[t] = 0.0f;
+            ts.halfU[t] = ts.halfV[t] = ts.clampS[t] = ts.clampT[t] = 0.0f;
             continue;
         }
         const auto& tile = mRdp->texture_tile[effective_tile[t]];
@@ -2457,8 +2468,8 @@ void Interpreter::DeriveTriState() {
         if (tile.shiftt != 0) {
             scaleT = tile.shiftt <= 10 ? 1.0f / (1 << tile.shiftt) : (float)(1 << (16 - tile.shiftt));
         }
-        const float invW = 1.0f / (float)tex_width[t];
-        const float invH = 1.0f / (float)tex_height[t];
+        const float invW = 1.0f / (float)std::max<uint32_t>(tex_width[t], 1);
+        const float invH = 1.0f / (float)std::max<uint32_t>(tex_height[t], 1);
         ts.uMul[t] = (1.0f / 32.0f) * scaleS * invW;
         ts.vMul[t] = (1.0f / 32.0f) * scaleT * invH;
         ts.uAdd[t] = -tile.uls * 0.25f * invW;
