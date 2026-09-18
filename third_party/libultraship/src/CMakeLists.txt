@@ -91,6 +91,8 @@ endif()
 
 find_package(libzip REQUIRED)
 target_link_libraries(libultraship PRIVATE libzip::zip)
+find_package(ZLIB REQUIRED)
+target_link_libraries(libultraship PRIVATE ZLIB::ZLIB)
 
 find_package(nlohmann_json REQUIRED)
 target_link_libraries(libultraship PUBLIC nlohmann_json::nlohmann_json)
@@ -262,4 +264,3 @@ if ("${CMAKE_CXX_COMPILER_ID}" MATCHES "GNU|Clang")
     )
     endif()
 endif()
-

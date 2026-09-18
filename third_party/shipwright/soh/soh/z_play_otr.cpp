@@ -17,6 +17,9 @@ extern "C" void Soh3dsResourceCacheReport(char* out, unsigned size);
 // different, undefined symbol.
 extern "C" unsigned int __ctru_heap_size;
 #include "soh/frame_interpolation.h"
+#ifdef __3DS__
+#include "ship/utils/memory_diagnostics_3ds.h"
+#endif
 #endif
 #include <spdlog/spdlog.h>
 
@@ -241,7 +244,7 @@ extern "C" void OTRPlay_SpawnScene(PlayState* play, s32 sceneId, s32 spawn) {
                         std::snprintf(line, sizeof(line),
                                       "soh-3ds evict: PINNED objects/%s (%ld pinned resources), skipped\n", name,
                                       pinned);
-                        std::fputs(line, stderr);
+                        Soh3dsWriteMemoryDiagnostic(line);
                         return false;
                     }
                     for (const auto& f : *objFiles) {
@@ -289,8 +292,24 @@ extern "C" void OTRPlay_SpawnScene(PlayState* play, s32 sceneId, s32 spawn) {
                 const unsigned long heapCap = (unsigned long)__ctru_heap_size;
                 const unsigned long inUse = (unsigned long)miBefore.uordblks;
                 const unsigned long headroom = heapCap > inUse ? heapCap - inUse : 0ul;
+                // The floor must scale with the cap. A fixed 12 MB was
+                // calibrated on an hbmenu/3dsx launch, which inherits the host
+                // title's exheader and reported an 84 MiB heap. Under the CIA
+                // the cap is ~37.7 MB and the working set ~35 MB, so headroom
+                // can never exceed ~2.5 MB and a 12 MB floor means "sweep on
+                // every scene transition, unconditionally". That dumps the whole
+                // objects/ cache, the incoming scene reloads what it still
+                // needs, and the resulting small-allocation churn is what the
+                // 07:52 hardware run recorded: ordblks 49,663 free blocks
+                // averaging ~30 bytes, 1.6-6.0 second ticks, and a bad_alloc on
+                // a 1,072-byte request with 1.5 MB free.
+                // Deriving the default from the cap makes "pressure" mean the
+                // same thing in either launch mode. An explicit CVar still
+                // wins, and 0 still disables the sweep entirely.
+                const long sweepOverride = CVarGetInteger("gSceneEvictSweepMB", -1);
                 const unsigned long sweepFloor =
-                    (unsigned long)CVarGetInteger("gSceneEvictSweepMB", 12) * 1024ul * 1024ul;
+                    sweepOverride < 0 ? heapCap / 16ul
+                                      : (unsigned long)sweepOverride * 1024ul * 1024ul;
                 if (sweepFloor != 0 && headroom <= sweepFloor) {
                     long released = 0;
                     const auto dirs = resMgr->Soh3dsCachedSubdirs("objects/");
@@ -301,7 +320,7 @@ extern "C" void OTRPlay_SpawnScene(PlayState* play, s32 sceneId, s32 spawn) {
                     std::snprintf(line, sizeof(line),
                                   "soh-3ds evict: pressure sweep, %lu KiB headroom, released %ld of %u dirs\n",
                                   headroom / 1024ul, released, (unsigned)dirs.size());
-                    std::fputs(line, stderr);
+                    Soh3dsWriteMemoryDiagnostic(line);
                 }
             }
             // The interpolation recorder retains its node tree across ticks so
@@ -320,7 +339,7 @@ extern "C" void OTRPlay_SpawnScene(PlayState* play, s32 sceneId, s32 spawn) {
                               (int)(((long)miBefore.uordblks - (long)miAfter.uordblks) / 1024),
                               (unsigned)(miBefore.uordblks / 1024), (unsigned)(miAfter.uordblks / 1024),
                               invalidatedBlobs);
-                std::fputs(line, stderr);
+                Soh3dsWriteMemoryDiagnostic(line);
             }
             // Which prefixes hold the cache, and how much of each nothing
             // references. Once per transition; it walks every cache line.
@@ -329,7 +348,7 @@ extern "C" void OTRPlay_SpawnScene(PlayState* play, s32 sceneId, s32 spawn) {
                 Soh3dsResourceCacheReport(buckets, sizeof(buckets));
                 char line[400];
                 std::snprintf(line, sizeof(line), "soh-3ds cache: %s\n", buckets);
-                std::fputs(line, stderr);
+                Soh3dsWriteMemoryDiagnostic(line);
             }
         }
         sPrevSceneDir = newSceneDir;

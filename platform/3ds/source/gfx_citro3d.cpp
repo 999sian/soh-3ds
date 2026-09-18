@@ -1,9 +1,12 @@
 #include "gfx_citro3d.h"
+#include "system_3ds.h"
 #include "depth_snapshot_3ds.h"
 #include "decal_depth_3ds.h"
 #include "frame_trace_3ds.hpp"
 #include "ship/utils/logging_3ds.h"
 #include "fast/backends/gfx_profile_3ds.h"
+#include "fast/backends/game_profile_3ds.h"
+#include "gpu_command_budget_3ds.hpp"
 
 #include <3ds.h>
 #include <citro3d.h>
@@ -64,14 +67,14 @@ struct Soh3dsProfileCounter {
     uint32_t samples = 0;
     uint32_t ordinal = 0;
 };
-static bool sRenderProfileEnabled = false;
+extern "C" { bool gSoh3dsRenderProfileEnabled = false; }
 static std::array<Soh3dsProfileCounter, static_cast<unsigned>(Soh3dsProfileSection::Count)> sRenderProfile;
 struct Soh3dsPackCoverage {
     uint32_t totalBatches = 0, totalVertices = 0, commonBatches = 0, commonVertices = 0;
 };
 static Soh3dsPackCoverage sPackCoverage;
 extern "C" void Soh3dsProfilePack(unsigned common, uint32_t vertices) {
-    if (!sRenderProfileEnabled) return;
+    if (!gSoh3dsRenderProfileEnabled) return;
     ++sPackCoverage.totalBatches;
     sPackCoverage.totalVertices += vertices;
     if (common) {
@@ -80,7 +83,7 @@ extern "C" void Soh3dsProfilePack(unsigned common, uint32_t vertices) {
     }
 }
 extern "C" uint64_t Soh3dsProfileBegin(unsigned section) {
-    if (!sRenderProfileEnabled || section >= sRenderProfile.size()) return 0;
+    if (!gSoh3dsRenderProfileEnabled || section >= sRenderProfile.size()) return 0;
     auto& counter = sRenderProfile[section];
     ++counter.calls;
     const bool hot = (section >= static_cast<unsigned>(Soh3dsProfileSection::Draw) &&
@@ -100,12 +103,44 @@ extern "C" void Soh3dsProfileEnd(unsigned section, uint64_t start) {
         sRenderProfile[section].ticks += svcGetSystemTick() - start;
     }
 }
+// Coarse, main-thread game scopes use every call so isolated spikes remain visible.
+struct Soh3dsGameCounter {
+    uint64_t ticks = 0, maxTicks = 0;
+    uint32_t calls = 0;
+};
+static std::array<Soh3dsGameCounter, SOH3DS_GAME_COUNT> sGameProfile;
+static std::array<uint32_t, static_cast<unsigned>(Soh3dsVertexPath::Count)> sVertexCoverage;
+extern "C" uint64_t Soh3dsGameProfileBegin(unsigned section) {
+    if (!gSoh3dsRenderProfileEnabled || section >= sGameProfile.size()) return 0;
+    ++sGameProfile[section].calls;
+    return svcGetSystemTick();
+}
+extern "C" void Soh3dsGameProfileEnd(unsigned section, uint64_t start) {
+    if (start == 0 || section >= sGameProfile.size()) return;
+    const uint64_t elapsed = svcGetSystemTick() - start;
+    auto& counter = sGameProfile[section];
+    counter.ticks += elapsed;
+    if (elapsed > counter.maxTicks) counter.maxTicks = elapsed;
+}
+extern "C" void Soh3dsProfileVertexPath(unsigned path, uint32_t triangles) {
+    if (gSoh3dsRenderProfileEnabled && path < sVertexCoverage.size())
+        sVertexCoverage[path] += triangles;
+}
+static void Soh3dsSetDetailEnabled(bool enabled) {
+    if (enabled != gSoh3dsRenderProfileEnabled) {
+        sGameProfile = {};
+        sVertexCoverage = {};
+        sRenderProfile = {};
+        sPackCoverage = {};
+    }
+    gSoh3dsRenderProfileEnabled = enabled;
+}
 static FILE* Soh3dsOpenPerformanceLog() {
-    sRenderProfileEnabled = false;
+    Soh3dsSetDetailEnabled(false);
     if (!Soh3dsLoggingEnabled(SOH3DS_LOG_GENERAL)) return nullptr;
     FILE* log = std::fopen("perf.csv", "ab");
     if (log == nullptr) return nullptr;
-    sRenderProfileEnabled = Soh3dsLoggingEnabled(SOH3DS_LOG_PROFILE);
+    Soh3dsSetDetailEnabled(Soh3dsLoggingEnabled(SOH3DS_LOG_PROFILE));
     return log;
 }
 static FILE* Soh3dsPerformanceLog() {
@@ -118,7 +153,7 @@ static FILE* Soh3dsPerformanceLog() {
         log = enabled ? Soh3dsOpenPerformanceLog() : nullptr;
         wasEnabled = enabled;
     }
-    sRenderProfileEnabled = log && Soh3dsLoggingEnabled(SOH3DS_LOG_PROFILE);
+    Soh3dsSetDetailEnabled(log && Soh3dsLoggingEnabled(SOH3DS_LOG_PROFILE));
     return log;
 }
 // Frame pacing state (see EndFrame). RunCommands checks the current LCD
@@ -144,6 +179,14 @@ extern "C" void Soh3dsSleepShutdown() __attribute__((weak));
 
 namespace Fast {
 namespace {
+
+void RequireGpuCommandRoom(uint32_t requiredWords) {
+    u32* buffer = nullptr;
+    u32 capacity = 0, offset = 0;
+    GPUCMD_GetBuffer(&buffer, &capacity, &offset);
+    if (buffer == nullptr || !mk64_3ds::GpuCommandRoom(capacity, offset, requiredWords))
+        throw mk64_3ds::GpuCommandPressure();
+}
 
 constexpr uint32_t kTopLogicalWidth = 400;
 constexpr uint32_t kTopWideWidth = 800;
@@ -219,6 +262,71 @@ uint8_t FloatColorToByte(float value) {
     return static_cast<uint8_t>(value * 255.0f + 0.5f);
 }
 
+// Full byte inputs preserve the old first-varying-input rule. Every unequal
+// pair of byte/255 values differs by at least 1/255, exceeding its 1e-5 cutoff.
+// Constants still use the exact original multiplication, once per draw.
+int SelectCompactInputs(const void* storage, size_t count, const CompactVertexLayout& layout,
+                        std::array<std::array<float, 4>, 7>& constants) {
+    const CompactVertex first = ReadCompactVertex(storage, 0);
+    int varyingInput = layout.numInputs == 1 ? 0 : -1;
+    constexpr float kInv255 = 1.0f / 255.0f;
+    for (unsigned input = 0; input < layout.numInputs; ++input) {
+        for (unsigned channel = 0; channel < 4; ++channel) {
+            constants[input][channel] = channel == 3 && !layout.alpha ? 1.0f : first.input[input][channel] * kInv255;
+        }
+        if (varyingInput >= 0) continue;
+        for (size_t vertex = 1; vertex < count; ++vertex) {
+            const CompactVertex record = ReadCompactVertex(storage, vertex);
+            if (std::memcmp(record.input[input], first.input[input], layout.alpha ? 4 : 3) != 0) {
+                varyingInput = input;
+                break;
+            }
+        }
+    }
+    return varyingInput < 0 && layout.numInputs > 0 ? 0 : varyingInput;
+}
+
+void PackCompactVertices(const void* storage, PackedVertex* packedVertices, size_t vertexCount,
+                         const CompactVertexLayout& layout, int varyingInput, float coverScale,
+                         const std::array<float, 2>& textureScaleU,
+                         const std::array<float, 2>& textureScaleV,
+                         const std::array<float, 2>& textureOffsetV,
+                         const std::array<bool, 2>& rotatedFramebuffer) {
+    for (size_t vertex = 0; vertex < vertexCount; ++vertex) {
+        const CompactVertex record = ReadCompactVertex(storage, vertex);
+        PackedVertex& destination = packedVertices[vertex];
+        destination.position[0] = record.position[0] * coverScale;
+        destination.position[1] = record.position[1] * coverScale;
+        destination.position[2] = record.position[2];
+        destination.position[3] = record.position[3];
+        for (unsigned texture = 0; texture < 2; ++texture) {
+            float u = 0.0f, v = 0.0f;
+            if (layout.textureMask & (1u << texture)) {
+                u = record.texcoord[texture][0];
+                v = record.texcoord[texture][1];
+                if (rotatedFramebuffer[texture]) {
+                    const float uprightU = std::clamp(u, 0.0f, 1.0f);
+                    const float uprightV = std::clamp(v, 0.0f, 1.0f);
+                    u = (1.0f - uprightV) * textureScaleU[texture];
+                    v = 1.0f - textureOffsetV[texture] - uprightU * textureScaleV[texture];
+                } else {
+                    u *= textureScaleU[texture];
+                    v *= textureScaleV[texture];
+                }
+            }
+            float* texcoord = texture == 0 ? destination.texcoord0 : destination.texcoord1;
+            texcoord[0] = u; texcoord[1] = v;
+        }
+        if (varyingInput >= 0) {
+            std::memcpy(destination.color, record.input[varyingInput], 4);
+            if (!layout.alpha) destination.color[3] = 255;
+        } else {
+            std::memset(destination.color, 255, 4);
+        }
+        if (layout.fog) destination.color[3] = record.fog[3];
+    }
+}
+
 #ifndef SOH3DS_EXPERIMENT_COMMON_PACK
 // Rolled back after reported graphical issues. Use the original generic
 // packer in normal builds; the experimental path is for explicit A/B tests.
@@ -231,6 +339,10 @@ void PackGenericVertices(const float* drawVertices, PackedVertex* packedVertices
                          const std::array<float, 2>& textureScaleV,
                          const std::array<float, 2>& textureOffsetV,
                          const std::array<bool, 2>& rotatedFramebuffer) {
+    // Measured 2026-09-11: hand-hoisting the invariant program-> and std::array
+    // loads out of this loop made it worse (-13 ldrb but +609 instructions and
+    // +2436 bytes), because GCC -O3 already performs the motion and the explicit
+    // locals only added stack traffic. Left as-is deliberately.
     for (size_t vertex = 0; vertex < vertexCount; ++vertex) {
         const float* source = drawVertices + vertex * program->strideFloats;
         PackedVertex& destination = packedVertices[vertex];
@@ -672,6 +784,27 @@ ChannelPlan BuildChannelPlan(const int formula[4], int varyingInput,
     plan.operations[0] = { GPU_SUBTRACT, { a, b, SourceZero } };
     plan.operations[1] = { GPU_MULTIPLY_ADD, { SourceCombined, c, d } };
     return plan;
+}
+
+CompiledChannel3DS CompileChannelPlan(const int formula[4]) {
+    CompiledChannel3DS compiled;
+    // These branches are independent of both the varying slot and constants.
+    // Keep all other shapes dynamic: precompiling them with zero constants
+    // would freeze OoT's per-draw subtract-fold and HUD interpolation decisions.
+    if (formula[2] != SourceZero && formula[1] != SourceZero) return compiled;
+    const auto plan = BuildChannelPlan(formula, -1, {}, false);
+    compiled.function = static_cast<uint8_t>(plan[0].function);
+    for (size_t i = 0; i < 3; ++i) compiled.source[i] = static_cast<uint8_t>(plan[0].source[i]);
+    compiled.valid = true;
+    return compiled;
+}
+
+ChannelPlan ResolveChannelPlan(const CompiledChannel3DS& compiled, const int formula[4],
+                              int varyingInput, const std::array<std::array<float, 4>, 7>& constants,
+                              bool alphaChannel) {
+    if (!compiled.valid) return BuildChannelPlan(formula, varyingInput, constants, alphaChannel);
+    return SingleOperationPlan({static_cast<GPU_COMBINEFUNC>(compiled.function),
+        {compiled.source[0], compiled.source[1], compiled.source[2]}});
 }
 
 // The one constant colour a stage reads: the first constant source of the
@@ -1134,6 +1267,11 @@ ShaderProgram* GfxRenderingAPICitro3D::CreateAndLoadNewShader(uint64_t shaderId0
         offset += program->alpha ? 4 : 3;
     }
     program->strideFloats = offset;
+    for (int cycle = 0; cycle < 2; ++cycle) {
+        for (int channel = 0; channel < 2; ++channel) {
+            program->compiledChannels[cycle][channel] = CompileChannelPlan(program->combiner[cycle][channel]);
+        }
+    }
 
     ShaderProgram* result = program.get();
     mImpl->shaderPrograms[key] = std::move(program);
@@ -1300,7 +1438,9 @@ void GfxRenderingAPICitro3D::UploadTexture(const uint8_t* rgba32Buf, uint32_t wi
     }
     slot.hasTransparency = combinedAlpha != 0xFF;
 
-    C3D_TexFlush(&slot.texture);
+    if (!Soh3dsCleanDataCache(slot.texture.data, slot.allocatedBytes)) {
+        mImpl->externalLinearBuffersDirty = true;
+    }
     ++mImpl->textureCacheUploadCount;
     mImpl->textureCacheUploadBytes += slot.allocatedBytes;
     // TextureCacheValue is value-initialized with linear_filter=false on a
@@ -1444,6 +1584,23 @@ void GfxRenderingAPICitro3D::SetUseAlpha(bool useAlpha) {
 }
 
 void GfxRenderingAPICitro3D::DrawTriangles(float bufVbo[], size_t bufVboLen, size_t bufVboNumTris) {
+    DrawTrianglesInternal(bufVbo, bufVboLen, bufVboNumTris, nullptr);
+}
+
+bool GfxRenderingAPICitro3D::SupportsCompactVertexStream() const {
+#if defined(SOH3DS_COMPACT_VERTEX_STREAM) && SOH3DS_COMPACT_VERTEX_STREAM
+    return true;
+#else
+    return false;
+#endif
+}
+
+void GfxRenderingAPICitro3D::DrawCompactTriangles(float storage[], size_t numTris, const CompactVertexLayout& layout) {
+    DrawTrianglesInternal(storage, numTris * 3 * layout.StrideFloats(), numTris, &layout);
+}
+
+void GfxRenderingAPICitro3D::DrawTrianglesInternal(float bufVbo[], size_t bufVboLen, size_t bufVboNumTris,
+                                               const CompactVertexLayout* compactLayout) {
     Soh3dsProfileScope drawProfile(Soh3dsProfileSection::Draw);
     ShaderProgram* program = mImpl->currentProgram;
     if (!mImpl->frameActive || program == nullptr || program->invisible || bufVbo == nullptr ||
@@ -1451,11 +1608,24 @@ void GfxRenderingAPICitro3D::DrawTriangles(float bufVbo[], size_t bufVboLen, siz
         return;
     }
 
+    // Fail through the recoverable renderer path before libctru's fatal
+    // capacity assertion. Keep room to submit/close the partial frame safely.
+    RequireGpuCommandRoom(mk64_3ds::kGpuCommandTailWords + mk64_3ds::kGpuCommandDrawWords);
+
     const size_t sourceVertexCount = std::min(bufVboNumTris * 3, static_cast<size_t>(kMaxSourceVertices));
     const size_t sourceTriangleCount = sourceVertexCount / 3;
     if (program->strideFloats > kMaxVertexStrideFloats ||
         bufVboLen < sourceVertexCount * program->strideFloats) {
         return;
+    }
+    if (compactLayout != nullptr &&
+        (compactLayout->version != 1 || compactLayout->numInputs != program->numInputs ||
+         compactLayout->numInputs > 2 || compactLayout->alpha != program->alpha ||
+         compactLayout->fog != program->fog || program->grayscale ||
+         compactLayout->textureMask != ((program->usedTextures[0] ? 1 : 0) | (program->usedTextures[1] ? 2 : 0)) ||
+         compactLayout->StrideFloats() != program->strideFloats ||
+         program->clamp[0][0] || program->clamp[0][1] || program->clamp[1][0] || program->clamp[1][1])) {
+        return; // Reject an incompatible/version-mismatched caller, never reinterpret bytes as floats.
     }
     // A texture whose allocation failed (or a framebuffer never drawn to or
     // copied into) has no storage; the unit still holds whatever was bound
@@ -1497,13 +1667,19 @@ void GfxRenderingAPICitro3D::DrawTriangles(float bufVbo[], size_t bufVboLen, siz
     size_t vertexCount = sourceVertexCount;
     bool needsClipping = false;
     for (size_t vertex = 0; vertex < sourceVertexCount; ++vertex) {
-        const float* v = bufVbo + vertex * program->strideFloats;
+        const CompactVertex record = compactLayout != nullptr ? ReadCompactVertex(bufVbo, vertex) : CompactVertex{};
+        const float* v = compactLayout != nullptr ? record.position : bufVbo + vertex * program->strideFloats;
         if (v[2] + v[3] < 0.0f) { // in front of the near plane
             needsClipping = true;
             break;
         }
     }
     if (needsClipping) {
+        if (compactLayout != nullptr) {
+            Soh3dsProfileVertexBatch(Soh3dsVertexPath::CompactClip, static_cast<uint32_t>(sourceTriangleCount));
+            ExpandCompactVerticesInPlace(bufVbo, sourceVertexCount, *compactLayout);
+            compactLayout = nullptr;
+        }
         mImpl->clipScratch.resize(sourceTriangleCount * 6 * program->strideFloats);
         size_t clippedVertexCount = 0;
         for (size_t triangle = 0; triangle < sourceTriangleCount; ++triangle) {
@@ -1543,51 +1719,56 @@ void GfxRenderingAPICitro3D::DrawTriangles(float bufVbo[], size_t bufVboLen, siz
     const size_t firstVertex = mImpl->packedVertexCount;
 
     std::array<std::array<float, 4>, 7> constants = {};
-    // A program with one combiner input can always source it from the primary
-    // vertex color. This is exact for both uniform and varying batches, avoids
-    // scanning every vertex to rediscover uniformity, and keeps per-draw tint
-    // changes out of the six-stage TEV rebuild path.
-    int varyingInput = program->numInputs == 1 ? 0 : -1;
-    for (uint8_t input = 0; input < program->numInputs; ++input) {
-        const uint8_t inputOffset = program->inputOffsets[input];
-        for (int component = 0; component < 4; ++component) {
-            // Inputs are packed rgb (3 floats) or rgba (4) by Fast3D. The old
-            // `std::min(component, 2)` read the BLUE channel as alpha whenever
-            // alpha was present: every constant alpha (PRIM/ENV alpha fades,
-            // PRIM_LOD_FRAC) was wrong - the Deku Tree webs drew opaque white
-            // because `TEXEL1 * PRIM_LOD_FRAC(=blue=1) + COMBINED` saturated.
-            constants[input][component] =
-                component == 3 && !program->alpha ? 1.0f : drawVertices[inputOffset + component];
-        }
-        // PICA exposes one primary vertex color to the TEV pipeline. Once that
-        // varying input is chosen, every later input is necessarily represented
-        // by its first-vertex constant, so scanning the rest of the batch cannot
-        // affect the generated TEV state.
-        if (varyingInput >= 0) {
-            continue;
-        }
-        bool constant = true;
-        for (size_t vertex = 1; vertex < vertexCount && constant; ++vertex) {
-            const float* source = drawVertices + vertex * program->strideFloats + inputOffset;
-            const int componentCount = program->alpha ? 4 : 3;
-            for (int component = 0; component < componentCount; ++component) {
-                if (std::fabs(source[component] - constants[input][component]) > 1.0e-5f) {
-                    constant = false;
-                    break;
+    int varyingInput;
+    if (compactLayout != nullptr) {
+        varyingInput = SelectCompactInputs(bufVbo, vertexCount, *compactLayout, constants);
+    } else {
+        // A program with one combiner input can always source it from the primary
+        // vertex color. This is exact for both uniform and varying batches, avoids
+        // scanning every vertex to rediscover uniformity, and keeps per-draw tint
+        // changes out of the six-stage TEV rebuild path.
+        varyingInput = program->numInputs == 1 ? 0 : -1;
+        for (uint8_t input = 0; input < program->numInputs; ++input) {
+            const uint8_t inputOffset = program->inputOffsets[input];
+            for (int component = 0; component < 4; ++component) {
+                // Inputs are packed rgb (3 floats) or rgba (4) by Fast3D. The old
+                // `std::min(component, 2)` read the BLUE channel as alpha whenever
+                // alpha was present: every constant alpha (PRIM/ENV alpha fades,
+                // PRIM_LOD_FRAC) was wrong - the Deku Tree webs drew opaque white
+                // because `TEXEL1 * PRIM_LOD_FRAC(=blue=1) + COMBINED` saturated.
+                constants[input][component] =
+                    component == 3 && !program->alpha ? 1.0f : drawVertices[inputOffset + component];
+            }
+            // PICA exposes one primary vertex color to the TEV pipeline. Once that
+            // varying input is chosen, every later input is necessarily represented
+            // by its first-vertex constant, so scanning the rest of the batch cannot
+            // affect the generated TEV state.
+            if (varyingInput >= 0) {
+                continue;
+            }
+            bool constant = true;
+            for (size_t vertex = 1; vertex < vertexCount && constant; ++vertex) {
+                const float* source = drawVertices + vertex * program->strideFloats + inputOffset;
+                const int componentCount = program->alpha ? 4 : 3;
+                for (int component = 0; component < componentCount; ++component) {
+                    if (std::fabs(source[component] - constants[input][component]) > 1.0e-5f) {
+                        constant = false;
+                        break;
+                    }
                 }
             }
+            if (!constant && varyingInput < 0) {
+                varyingInput = input;
+            }
         }
-        if (!constant && varyingInput < 0) {
-            varyingInput = input;
+        // SoH-3DS: every input uniform (2D HUD, menus) still puts input 0 on the
+        // primary colour, so a stage mixing two inputs - (PRIM - ENV) * TEXEL0 +
+        // ENV is the HUD text/outline shape - needs only one GPU_CONSTANT.
+        // ponytail: input 0 is a fixed pick; three uniform inputs in one stage
+        // still collide (none found in OoT).
+        if (varyingInput < 0 && program->numInputs > 0) {
+            varyingInput = 0;
         }
-    }
-    // SoH-3DS: every input uniform (2D HUD, menus) still puts input 0 on the
-    // primary colour, so a stage mixing two inputs - (PRIM - ENV) * TEXEL0 +
-    // ENV is the HUD text/outline shape - needs only one GPU_CONSTANT.
-    // ponytail: input 0 is a fixed pick; three uniform inputs in one stage
-    // still collide (none found in OoT).
-    if (varyingInput < 0 && program->numInputs > 0) {
-        varyingInput = 0;
     }
 
     // Fast3D already applies the same aspect correction to backgrounds and
@@ -1633,15 +1814,26 @@ void GfxRenderingAPICitro3D::DrawTriangles(float bufVbo[], size_t bufVboLen, siz
     }
     {
         Soh3dsProfileScope packProfile(Soh3dsProfileSection::Pack);
-        const bool commonPacked = PackVertices(drawVertices, mImpl->packedVertices + firstVertex, vertexCount, program,
-                                               varyingInput, coverScale, textureScaleU, textureScaleV, textureOffsetV,
-                                               rotatedFramebuffer);
-        Soh3dsProfilePackBatch(commonPacked, static_cast<uint32_t>(vertexCount));
+        if (compactLayout != nullptr) {
+            PackCompactVertices(bufVbo, mImpl->packedVertices + firstVertex, vertexCount, *compactLayout,
+                                varyingInput, coverScale, textureScaleU, textureScaleV, textureOffsetV, rotatedFramebuffer);
+            Soh3dsProfilePackBatch(false, static_cast<uint32_t>(vertexCount));
+        } else {
+            const bool commonPacked = PackVertices(drawVertices, mImpl->packedVertices + firstVertex, vertexCount, program,
+                                                   varyingInput, coverScale, textureScaleU, textureScaleV, textureOffsetV,
+                                                   rotatedFramebuffer);
+            Soh3dsProfilePackBatch(commonPacked, static_cast<uint32_t>(vertexCount));
+        }
     }
     Soh3dsProfileScope stateProfile(Soh3dsProfileSection::State);
     std::array<float, 4> fogColor = { 0.0f, 0.0f, 0.0f, 0.0f };
     if (program->fog) {
-        std::copy_n(drawVertices + program->fogOffset, 3, fogColor.begin());
+        if (compactLayout != nullptr) {
+            const CompactVertex first = ReadCompactVertex(bufVbo, 0);
+            for (unsigned channel = 0; channel < 3; ++channel) fogColor[channel] = first.fog[channel] * (1.0f / 255.0f);
+        } else {
+            std::copy_n(drawVertices + program->fogOffset, 3, fogColor.begin());
+        }
     }
     const int alphaVaryingInput = program->fog ? -1 : varyingInput;
 
@@ -1684,9 +1876,11 @@ void GfxRenderingAPICitro3D::DrawTriangles(float bufVbo[], size_t bufVboLen, siz
     int stage = 0;
     const int cycleCount = program->twoCycle ? 2 : 1;
     for (int cycle = 0; cycle < cycleCount && stage < 6; ++cycle) {
-        const ChannelPlan rgbPlan = BuildChannelPlan(program->combiner[cycle][0], varyingInput, constants, false);
+        const ChannelPlan rgbPlan = ResolveChannelPlan(program->compiledChannels[cycle][0],
+            program->combiner[cycle][0], varyingInput, constants, false);
         const ChannelPlan alphaPlan =
-            program->alpha ? BuildChannelPlan(program->combiner[cycle][1], alphaVaryingInput, constants, true)
+            program->alpha ? ResolveChannelPlan(program->compiledChannels[cycle][1],
+                                               program->combiner[cycle][1], alphaVaryingInput, constants, true)
                            : SingleOperationPlan(PassPrevious());
         const size_t operationCount = std::max(rgbPlan.size(), alphaPlan.size());
         for (size_t operationIndex = 0; operationIndex < operationCount && stage < 6; ++operationIndex, ++stage) {
@@ -1832,14 +2026,29 @@ void GfxRenderingAPICitro3D::DrawTriangles(float bufVbo[], size_t bufVboLen, siz
         }
     }
     if (mImpl->decal) {
-        for (size_t vertex = firstVertex; vertex < firstVertex + vertexCount; vertex += 3) {
-            const auto* triangle = mImpl->packedVertices + vertex;
-            C3D_DepthMap(true, -1.0f, DecalDepthBias3DS(triangle[0].position, triangle[1].position,
-                triangle[2].position, mImpl->viewportWidth, mImpl->viewportHeight));
-            C3D_DrawArrays(GPU_TRIANGLES, static_cast<int>(vertex), 3);
+        // Preserve per-triangle slope bias and ordering, but submit adjacent
+        // triangles with exactly equal bias together. Flat decals in particular
+        // need only one state update and draw, instead of one per triangle.
+        size_t batchBegin = firstVertex;
+        float batchBias = 0.0f;
+        const auto submitBatch = [&](size_t endVertex) {
+            C3D_DepthMap(true, -1.0f, batchBias);
+            C3D_DrawArrays(GPU_TRIANGLES, static_cast<int>(batchBegin),
+                           static_cast<int>(endVertex - batchBegin));
             ++mImpl->drawCallCount;
             mImpl->sampleFogDrawCount += program->fog ? 1u : 0u;
+        };
+        for (size_t vertex = firstVertex; vertex < firstVertex + vertexCount; vertex += 3) {
+            const auto* triangle = mImpl->packedVertices + vertex;
+            const float bias = DecalDepthBias3DS(triangle[0].position, triangle[1].position,
+                triangle[2].position, mImpl->viewportWidth, mImpl->viewportHeight);
+            if (vertex != batchBegin && bias != batchBias) {
+                submitBatch(vertex);
+                batchBegin = vertex;
+            }
+            batchBias = bias;
         }
+        if (batchBegin < firstVertex + vertexCount) submitBatch(firstVertex + vertexCount);
     } else {
         C3D_DrawArrays(GPU_TRIANGLES, static_cast<int>(firstVertex), static_cast<int>(vertexCount));
         ++mImpl->drawCallCount;
@@ -1859,7 +2068,9 @@ void GfxRenderingAPICitro3D::FlushPackedVertices() {
 
     const size_t vertexCount = mImpl->dirtyVertexEnd - mImpl->dirtyVertexBegin;
     const size_t byteCount = vertexCount * sizeof(PackedVertex);
-    GSPGPU_FlushDataCache(mImpl->packedVertices + mImpl->dirtyVertexBegin, byteCount);
+    if (!Soh3dsCleanDataCache(mImpl->packedVertices + mImpl->dirtyVertexBegin, byteCount)) {
+        mImpl->externalLinearBuffersDirty = true;
+    }
     ++mImpl->vertexUploadCount;
     mImpl->vertexUploadBytes += byteCount;
     mImpl->dirtyVertexBegin = mImpl->packedVertexCount;
@@ -1939,7 +2150,9 @@ bool GfxRenderingAPICitro3D::EnsurePresentationResources() {
             maskPixels[MortonOffset8x8(x, y)] = __builtin_bswap32(rgba);
         }
     }
-    C3D_TexFlush(&mImpl->crtMaskTexture);
+    if (!Soh3dsCleanDataCache(mImpl->crtMaskTexture.data, mImpl->crtMaskTexture.size)) {
+        C3D_TexFlush(&mImpl->crtMaskTexture);
+    }
     C3D_TexSetFilter(&mImpl->crtMaskTexture, GPU_NEAREST, GPU_NEAREST);
     C3D_TexSetWrap(&mImpl->crtMaskTexture, GPU_REPEAT, GPU_REPEAT);
     return true;
@@ -2110,7 +2323,9 @@ void GfxRenderingAPICitro3D::PresentSceneToTopTarget() {
 
     const size_t vertexCount = quadCount * 6;
     const size_t byteCount = vertexCount * sizeof(PackedVertex);
-    GSPGPU_FlushDataCache(mImpl->postprocessVertices, byteCount);
+    if (!Soh3dsCleanDataCache(mImpl->postprocessVertices, byteCount)) {
+        mImpl->externalLinearBuffersDirty = true;
+    }
     ++mImpl->vertexUploadCount;
     mImpl->vertexUploadBytes += byteCount;
     C3D_DrawArrays(GPU_TRIANGLES, 0, static_cast<int>(vertexCount));
@@ -2240,7 +2455,7 @@ void GfxRenderingAPICitro3D::Init() {
     if (bottomFramebuffer != nullptr) {
         const size_t bottomBytes = static_cast<size_t>(bottomWidth) * bottomHeight * 3;
         std::memset(bottomFramebuffer, 0, bottomBytes);
-        GSPGPU_FlushDataCache(bottomFramebuffer, bottomBytes);
+        Soh3dsCleanDataCache(bottomFramebuffer, bottomBytes);
     }
     aptSetHomeAllowed(true);
     aptSetSleepAllowed(true);
@@ -2249,7 +2464,7 @@ void GfxRenderingAPICitro3D::Init() {
         osSetSpeedupEnable(true);
     }
 
-    if (!C3D_Init(C3D_DEFAULT_CMDBUF_SIZE)) {
+    if (!C3D_Init(mk64_3ds::kGpuCommandBufferBytes)) {
         // SoH-3DS: every bail-out below leaves ready==false, which StartFrame
         // silently honours - the symptom is a black screen and an empty log.
         std::fprintf(stderr, "soh-3ds gfx: INIT FAIL C3D_Init\n");
@@ -2693,14 +2908,18 @@ void GfxRenderingAPICitro3D::EndFrame() {
             gSoh3dsTickPhaseTicks[i] = 0;
         }
 
-        char record[512];
+        char record[640];
         const int recordLength = std::snprintf(
             record, sizeof(record),
             "soh-3ds perf: frame=%u fps2=%lu.%lu fps10=%lu.%lu tps=%lu.%lu cpu60=%lums wait60=%lums loop60=%lums "
             "tick=%lu/%lu/%lums dropped=%lu "
-            "gpuProc=%lu.%02lums gpuDraw=%lu.%02lums cmd=%lu.%01lu%% "
+            "c3dCpuWall=%lu.%02lums gpuDraw=%lu.%02lums cmd=%lu.%01lu%% "
             "draws=%lu fog=%lu fold=%lu depthQ=%lu tris=%lu splits=%lu texLive=%lu texKiB=%lu "
-            "texUploads=%lu uploadKiB=%lu vtxPeak=%lu heap=%uKiB/%uKiB lin=%uKiB free=%uKiB res=%u/%u catches=%u\n",
+            "texUploads=%lu uploadKiB=%lu vtxPeak=%lu heap=%uKiB/%uKiB lin=%uKiB free=%uKiB res=%u/%u catches=%u "
+            // Fragmentation, not just occupancy: an alloc-fail on this target
+            // happens with megabytes free but split into ~30-byte fragments, so
+            // free bytes alone cannot distinguish exhaustion from fragmentation.
+            "ordblks=%lu fordKiB=%lu keep=%lu arenaKiB=%lu\n",
             sFrames,
             (unsigned long)(fps2Tenths / 10u), (unsigned long)(fps2Tenths % 10u),
             (unsigned long)(fps10Tenths / 10u), (unsigned long)(fps10Tenths % 10u),
@@ -2720,11 +2939,12 @@ void GfxRenderingAPICitro3D::EndFrame() {
             (unsigned long)mImpl->samplePeakPackedVertices,
             (unsigned)(mi.uordblks / 1024u), heapCapKiB, (unsigned)(linearSpaceFree() / 1024u),
             (unsigned)((envGetHeapSize() - (unsigned)mi.uordblks) / 1024u), resCount, resFree,
-            catches);
+            catches,
+            (unsigned long)mi.ordblks, (unsigned long)(mi.fordblks / 1024u),
+            (unsigned long)mi.keepcost, (unsigned long)(mi.arena / 1024u));
         if (recordLength > 0) {
             std::fputs(record, stderr);
         }
-
         // Basic FPS capture is independent of detailed per-draw profiling.
         // With no capture flag, normal runs perform no diagnostic file I/O.
         FILE* sPerformanceLog = performanceLog;
@@ -2738,14 +2958,14 @@ void GfxRenderingAPICitro3D::EndFrame() {
             std::snprintf(context, sizeof(context),
                           "soh-3ds context: frame=%u target=%d profile=%u sceneEnd=%.80s\n",
                           sFrames, Soh3dsTargetFps != nullptr ? Soh3dsTargetFps() : 60,
-                          static_cast<unsigned>(sRenderProfileEnabled), scene != nullptr ? scene : "unknown");
+                          static_cast<unsigned>(gSoh3dsRenderProfileEnabled), scene != nullptr ? scene : "unknown");
             std::fputs(context, sPerformanceLog);
             if (++sPerformanceLogSamples % 10u == 0u) {
                 std::fflush(sPerformanceLog);
             }
         }
 
-        if (sRenderProfileEnabled) {
+        if (gSoh3dsRenderProfileEnabled) {
             static constexpr const char* labels[] = {
                 "dl", "draw", "pack", "state", "depth", "interp", "vertex", "triangle", "tristate", "texture",
                 "trikey", "emit"
@@ -2779,6 +2999,42 @@ void GfxRenderingAPICitro3D::EndFrame() {
             std::fputs(coverage, stderr);
             if (sPerformanceLog != nullptr) std::fputs(coverage, sPerformanceLog);
             sPackCoverage = {};
+            // Inclusive game scopes overlap (e.g. actors within update).
+            static constexpr const char* gameLabels[] = {
+                "update", "play", "commands", "actors", "actor_draw", "collision", "animation", "room"
+            };
+            static_assert(std::size(gameLabels) == SOH3DS_GAME_COUNT);
+            char gameDetail[768];
+            size_t gameUsed = std::snprintf(gameDetail, sizeof(gameDetail),
+                "soh-3ds gameprofile: frame=%u units=us/calls/max_us inclusive=1", sFrames);
+            for (size_t i = 0; i < sGameProfile.size(); ++i) {
+                const auto& c = sGameProfile[i];
+                if (gameUsed < sizeof(gameDetail)) {
+                    const int n = std::snprintf(gameDetail + gameUsed, sizeof(gameDetail) - gameUsed,
+                        " %s=%llu/%lu/%llu", gameLabels[i],
+                        static_cast<unsigned long long>(c.ticks / 268u),
+                        static_cast<unsigned long>(c.calls),
+                        static_cast<unsigned long long>(c.maxTicks / 268u));
+                    if (n > 0) gameUsed += static_cast<size_t>(n);
+                }
+            }
+            sGameProfile = {};
+            if (gameUsed + 1 < sizeof(gameDetail)) {
+                gameDetail[gameUsed++] = '\n';
+                gameDetail[gameUsed] = '\0';
+                std::fputs(gameDetail, stderr);
+                if (sPerformanceLog != nullptr) std::fputs(gameDetail, sPerformanceLog);
+            }
+            char paths[256];
+            std::snprintf(paths, sizeof(paths),
+                "soh-3ds emitmix: frame=%u units=triangles generic=%lu arm11=%lu compact=%lu compact_clip=%lu\n",
+                sFrames, static_cast<unsigned long>(sVertexCoverage[0]),
+                static_cast<unsigned long>(sVertexCoverage[1]),
+                static_cast<unsigned long>(sVertexCoverage[2]),
+                static_cast<unsigned long>(sVertexCoverage[3]));
+            std::fputs(paths, stderr);
+            if (sPerformanceLog != nullptr) std::fputs(paths, sPerformanceLog);
+            sVertexCoverage = {};
         }
 
         // Every 10th sample, name what holds the cache. One full cache walk
@@ -3079,7 +3335,7 @@ void GfxRenderingAPICitro3D::ResolveDepthProbe() {
             return;
         }
         const auto& fb = target->frameBuf;
-        GSPGPU_InvalidateDataCache(fb.depthBuf, static_cast<size_t>(fb.width) * fb.height * 4U);
+        Soh3dsInvalidateDataCache(fb.depthBuf, static_cast<size_t>(fb.width) * fb.height * 4U);
         if (!snapshot.Capture(fb.depthBuf, fb.width, fb.height, width, height, rotated)) {
             static unsigned failures = 0;
             if (++failures <= 3) std::fprintf(stderr, "soh-3ds gfx: depth snapshot unavailable\n");
@@ -3277,6 +3533,7 @@ void* GfxRenderingAPICitro3D::PrepareForExternalDraw() {
     if (!mImpl->frameActive) {
         return nullptr;
     }
+    RequireGpuCommandRoom(mk64_3ds::kGpuCommandTailWords);
     // Citro2D's target-clear helper performs an internal FrameSplit. Complete
     // any scaled presentation first, then hand it a coherent top target.
     PresentSceneToTopTarget();

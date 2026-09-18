@@ -8,6 +8,7 @@
 #include <unordered_map>
 
 #include "fast/backends/gfx_rendering_api.h"
+#include "compiled_channel_3ds.h"
 
 namespace Fast {
 
@@ -30,6 +31,7 @@ struct ShaderProgram {
     bool invisible = false;
     bool twoCycle = false;
     int combiner[2][2][4] = {};
+    CompiledChannel3DS compiledChannels[2][2] = {};
 };
 
 class GfxRenderingAPICitro3D final : public GfxRenderingAPI {
@@ -57,6 +59,8 @@ class GfxRenderingAPICitro3D final : public GfxRenderingAPI {
     void SetScissor(int x, int y, int width, int height) override;
     void SetUseAlpha(bool useAlpha) override;
     void DrawTriangles(float bufVbo[], size_t bufVboLen, size_t bufVboNumTris) override;
+    bool SupportsCompactVertexStream() const override;
+    void DrawCompactTriangles(float storage[], size_t numTris, const CompactVertexLayout& layout) override;
     void Init() override;
     void OnResize() override;
     void StartFrame() override;
@@ -100,6 +104,8 @@ class GfxRenderingAPICitro3D final : public GfxRenderingAPI {
     void MarkExternalLinearBuffersDirty();
 
   private:
+    void DrawTrianglesInternal(float storage[], size_t floatLength, size_t numTris,
+                               const CompactVertexLayout* compactLayout);
     void FlushPackedVertices();
     void ResolveDepthProbe();
     bool EnsurePresentationResources();

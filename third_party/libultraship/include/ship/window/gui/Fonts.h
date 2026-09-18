@@ -10,7 +10,9 @@
 
 // File: 'fontawesome-webfont.ttf' (165548 bytes)
 // Exported using binary_to_compressed_c.cpp
-static const char fontawesome_compressed_data_base85[155710 + 1] =
+// Share the same immutable font across GUI users instead of embedding a copy
+// in every translation unit (each copy occupies about 152 KiB on 3DS).
+inline constexpr char fontawesome_compressed_data_base85[155710 + 1] =
     "7])#######Xf/IZ'/###[),##0rC$#Q6>##T@;*>7eu':fBt(Nt@'o/"
     "fY;99]'W<#.(m<-Q@^01kZn425<<:Je,>>#CEnB4aNV=BB%on5Y;jl&#7YY#Rb(*Hlme+MmRu(Nfc5&5#-0%J"
     "kxp6[5e;A+t5IG;e.d<B]QZemdq.>-Q@pV-TT$=(ghN5&/.>>#FqEn/"

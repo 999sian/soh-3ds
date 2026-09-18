@@ -108,16 +108,16 @@ class Archive : public std::enable_shared_from_this<Archive> {
      * The archive owns the authoritative hash->path index, so callers should ask
      * here rather than keeping a parallel copy of every path.
      */
-    const std::string* HashToString(uint64_t hash) const;
+    virtual const std::string* HashToString(uint64_t hash) const;
 
-    std::shared_ptr<std::unordered_map<uint64_t, std::string>> ListFiles();
+    virtual std::shared_ptr<std::unordered_map<uint64_t, std::string>> ListFiles();
 
     /**
      * @brief Returns only the files whose paths match the given filter string.
      * @param filter Substring or glob pattern to match against virtual paths.
      * @return Shared pointer to a filtered hash→path map.
      */
-    std::shared_ptr<std::unordered_map<uint64_t, std::string>> ListFiles(const std::string& filter);
+    virtual std::shared_ptr<std::unordered_map<uint64_t, std::string>> ListFiles(const std::string& filter);
 
     /**
      * @brief Checks whether the archive contains a file at the given path.
@@ -131,7 +131,7 @@ class Archive : public std::enable_shared_from_this<Archive> {
      * @param hash 64-bit hash of the file path.
      * @return true if the hash is found in this archive.
      */
-    bool HasFile(uint64_t hash);
+    virtual bool HasFile(uint64_t hash);
 
     /**
      * @brief Returns true if a game version value was found in the manifest.
@@ -201,7 +201,7 @@ class Archive : public std::enable_shared_from_this<Archive> {
      * @brief Adds a file to the internal hash→path index.
      * @param filePath Virtual path of the file to index.
      */
-    void IndexFile(const std::string& filePath);
+    void IndexFile(std::string filePath);
     /**
      * @brief Pre-sizes the hash->path index for a known file count.
      * @param expectedFileCount Number of entries about to be indexed.

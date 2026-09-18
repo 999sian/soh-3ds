@@ -4,6 +4,8 @@
 #ifdef __3DS__
 
 #include "ship/audio/NdspAudioPlayer.h"
+#include "ship/audio/DspAudioBackend3DS.h"
+#include "ship/utils/audio_diagnostics_3ds.h"
 
 #include <3ds.h>
 
@@ -12,6 +14,8 @@
 #include <cstring>
 
 #include <spdlog/spdlog.h>
+
+extern "C" const Soh3dsDspAudioBackendApi* Soh3dsDspAudioBackend(void) __attribute__((weak));
 
 namespace {
 
@@ -32,6 +36,7 @@ struct AudioBuffer {
 std::array<AudioBuffer, kBufferCount> sBuffers;
 LightLock sBufferLock;
 bool sInitialized = false;
+const Soh3dsDspAudioBackendApi* sDspBackend = nullptr;
 uint32_t sDroppedBatches = 0;
 // SoH-3DS telemetry: high-water occupancy since the last pacing report. These
 // establish real hardware queue use before any pool resize is considered.
@@ -64,6 +69,10 @@ NdspAudioPlayer::~NdspAudioPlayer() {
 }
 
 bool NdspAudioPlayer::DoInit() {
+    if (!sDspBackend && Soh3dsDspAudioBackend) {
+        sDspBackend = Soh3dsDspAudioBackend();
+    }
+    if (sDspBackend) return sDspBackend->initialize(GetSampleRate(), GetDesiredBuffered());
     if (sInitialized) {
         return true;
     }
@@ -104,6 +113,7 @@ bool NdspAudioPlayer::DoInit() {
 }
 
 void NdspAudioPlayer::DoClose() {
+    if (sDspBackend) { sDspBackend->close(); return; }
     // The whole teardown holds sBufferLock: DoPlay (core-2 synthesis thread)
     // checks sInitialized unlocked, then calls NDSP APIs and memcpys into the
     // wave pool under this lock - so pause/clear/ndspExit, the sInitialized
@@ -134,6 +144,7 @@ void NdspAudioPlayer::DoClose() {
 // closes every teardown UAF window. Defined inside namespace Ship, so the
 // statics resolve unqualified; extern "C" gives it unmangled linkage.
 extern "C" void Soh3dsAudioQuiesce(void) {
+    if (sDspBackend) { sDspBackend->shutdown(); return; }
     BufferLockGuard lock;
     if (sInitialized) {
         ndspChnSetPaused(kChannel, true);
@@ -149,6 +160,9 @@ extern "C" void Soh3dsAudioQuiesce(void) {
 // Do not stop/recreate NDSP here: libctru owns the DSP sleep lifecycle.
 static bool sSleepLockHeld = false;
 extern "C" void Soh3dsAudioSleep(bool sleeping) {
+    // The custom runtime gates complete batches at the earlier SDK boundary,
+    // including when it has fallen back to NDSP.
+    if (sDspBackend) return;
     if (sleeping && !sSleepLockHeld) {
         // Before audio initialization there is no producer or initialized lock.
         if (!sInitialized) return;
@@ -161,6 +175,7 @@ extern "C" void Soh3dsAudioSleep(bool sleeping) {
 }
 
 int32_t NdspAudioPlayer::Buffered() {
+    if (sDspBackend) return sDspBackend->buffered();
     if (!sInitialized) {
         return 0;
     }
@@ -199,6 +214,7 @@ int32_t NdspAudioPlayer::Buffered() {
 }
 
 void NdspAudioPlayer::DoPlay(const uint8_t* buf, size_t len) {
+    if (sDspBackend) { sDspBackend->play(buf, len); return; }
     if (!sInitialized || buf == nullptr || len == 0) {
         return;
     }
@@ -207,7 +223,7 @@ void NdspAudioPlayer::DoPlay(const uint8_t* buf, size_t len) {
     // fully drained means an audible gap. Gap-riddled output sounds both
     // choppy and quiet (silence drags the perceived level down), which is
     // indistinguishable by ear from latency.
-    {
+    if (Soh3dsLoggingEnabled(SOH3DS_LOG_GENERAL)) {
         static uint32_t sCalls = 0, sGaps = 0;
         static int32_t sMinBuffered = INT32_MAX;
         const int32_t buffered = Buffered();
@@ -230,6 +246,12 @@ void NdspAudioPlayer::DoPlay(const uint8_t* buf, size_t len) {
             SPDLOG_INFO("NDSP pacing: {} refills, {} gaps, min buffered {} frames, peak buffered {} frames, "
                         "peak live waves {} of {}",
                         sCalls, sGaps, sMinBuffered, peakBuffered, peakLiveWaves, kBufferCount);
+            char record[192];
+            snprintf(record, sizeof(record),
+                     "audio queue: calls=%lu gaps=%lu minFrames=%ld peakFrames=%lu peakWaves=%lu dropped=%lu\n",
+                     (unsigned long)sCalls, (unsigned long)sGaps, (long)sMinBuffered,
+                     (unsigned long)peakBuffered, (unsigned long)peakLiveWaves, (unsigned long)sDroppedBatches);
+            Soh3dsWriteAudioDiagnostic(record);
             sMinBuffered = INT32_MAX;
         }
     }

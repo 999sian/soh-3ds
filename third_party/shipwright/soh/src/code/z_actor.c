@@ -1,3 +1,4 @@
+#include "fast/backends/game_profile_3ds.h"
 #include "global.h"
 #include <stdio.h>
 #include "vt.h"
@@ -2577,6 +2578,7 @@ u32 D_80116068[ACTORCAT_MAX] = {
 };
 
 void Actor_UpdateAll(PlayState* play, ActorContext* actorCtx) {
+    SOH3DS_GAME_PROFILE_SCOPE(profile, SOH3DS_GAME_ACTOR_UPDATE);
     Actor* refActor;
     Actor* actor;
     Player* player;
@@ -3044,6 +3046,7 @@ s32 Ship_CalcShouldDrawAndUpdate(PlayState* play, Actor* actor, Vec3f* projected
 // #endregion
 
 void Actor_DrawAll(PlayState* play, ActorContext* actorCtx) {
+    SOH3DS_GAME_PROFILE_SCOPE(profile, SOH3DS_GAME_ACTOR_DRAW);
     s32 invisibleActorCounter;
     Actor* invisibleActors[INVISIBLE_ACTOR_MAX];
     ActorListEntry* actorListEntry;
@@ -3051,6 +3054,8 @@ void Actor_DrawAll(PlayState* play, ActorContext* actorCtx) {
     s32 i;
 
     invisibleActorCounter = 0;
+    const bool extendedCulling = (CVarGetInteger(CVAR_ENHANCEMENT("DisableDrawDistance"), 1) > 1 ||
+                                  CVarGetInteger(CVAR_ENHANCEMENT("WidescreenActorCulling"), 0));
 
     OPEN_DISPS(play->state.gfxCtx);
 
@@ -3082,8 +3087,7 @@ void Actor_DrawAll(PlayState* play, ActorContext* actorCtx) {
             bool shipShouldDraw = false;
             bool shipShouldUpdate = false;
             if ((HREG(64) != 1) || ((HREG(65) != -1) && (HREG(65) != HREG(66))) || (HREG(70) == 0)) {
-                if (CVarGetInteger(CVAR_ENHANCEMENT("DisableDrawDistance"), 1) > 1 ||
-                    CVarGetInteger(CVAR_ENHANCEMENT("WidescreenActorCulling"), 0)) {
+                if (extendedCulling) {
                     Ship_CalcShouldDrawAndUpdate(play, actor, &actor->projectedPos, actor->projectedW, &shipShouldDraw,
                                                  &shipShouldUpdate);
 

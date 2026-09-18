@@ -81,6 +81,8 @@ struct GfxClipParameters { bool z_is_from_0_to_1 = false, invertY = false; };
 struct F3DGfx { struct { uint32_t w0, w1; } words; };
 #define C0(pos, width) ((cmd->words.w0 >> (pos)) & ((1U << width) - 1))
 #define C1(pos, width) ((cmd->words.w1 >> (pos)) & ((1U << width) - 1))
+enum class Soh3dsVertexPath { Generic, Arm11, Compact, CompactClip };
+static inline void Soh3dsProfileVertexBatch(Soh3dsVertexPath, unsigned) {}
 enum class Soh3dsProfileSection { Triangle, TriangleKey, TriangleEmit };
 struct Counts { unsigned triangle = 0, key = 0, emit = 0, derive = 0; };
 static Counts* activeCounts;
@@ -185,6 +187,7 @@ struct Interpreter {
     void GfxSpTri1(uint8_t,uint8_t,uint8_t,bool);
     bool GfxSpTri1Impl(uint8_t,uint8_t,uint8_t,bool,bool);
     void CaptureTriStateKey(TriStateKey*);
+    bool TriStateMatches() const;
     void EmitTriangle(LoadedVertex* const[3],bool);
     void Flush();
     void DeriveTriState() {
@@ -289,7 +292,8 @@ __attribute__((noinline)) void Backend::DrawTriangles(float* data, unsigned len,
 def implementation(text, namespace, candidate):
     parts = [function(text, 'void Interpreter::GfxSpTri1(')]
     if candidate:
-        parts += [function(text, 'bool Interpreter::GfxSpTri1Impl(')]
+        parts += [function(text, 'bool Interpreter::GfxSpTri1Impl('),
+                  function(source, 'bool Interpreter::TriStateMatches(')]
     for signature in ['void Interpreter::CaptureTriStateKey(', 'void Interpreter::EmitTriangle(',
                       'void Interpreter::Flush(', 'bool gfx_tri2_handler_f3dex(',
                       'bool gfx_quad_handler_f3dex2(', 'bool gfx_quad_handler_f3dex(']:
@@ -424,46 +428,51 @@ int main(int argc, char** argv) {
 }
 '''
 
-with tempfile.TemporaryDirectory(prefix='soh-triangle-pair-') as directory:
-    p = Path(directory)
-    flags = ['-std=c++20', '-O2', '-g', '-fno-fast-math']
-    if os.getenv('SANITIZE'):
-        flags += ['-fsanitize=address,undefined', '-fno-omit-frame-pointer', '-no-pie']
-    compiler = os.getenv('CXX', 'g++')
-    benchmark = bool(os.getenv('BENCHMARK'))
-    if benchmark:
-        assert not os.getenv('SANITIZE'), 'Sanitizers distort timings'
-        cpu = int(os.getenv('BENCH_CPU', str(max(os.sched_getaffinity(0)))))
-        os.sched_setaffinity(0, {cpu})
-        print(f'host={os.uname().machine}, cpu={cpu}, workload={os.getenv("HOTPATH", "textured")}, '
-              f'compiler={subprocess.check_output([compiler, "--version"], text=True).splitlines()[0]}, flags={flags}', flush=True)
-    executables = []
-    for enabled in ((-1, 0, 1) if benchmark else (0, 1)):
-        code = PREAMBLE.replace('TRI_CAPACITY', re.search(r'constexpr size_t MAX_TRI_BUFFER = (\d+);', source).group(1))
+def main():
+    with tempfile.TemporaryDirectory(prefix='soh-triangle-pair-') as directory:
+        p = Path(directory)
+        flags = ['-std=c++20', '-O2', '-g', '-fno-fast-math']
+        if os.getenv('SANITIZE'):
+            flags += ['-fsanitize=address,undefined', '-fno-omit-frame-pointer', '-no-pie']
+        compiler = os.getenv('CXX', 'g++')
+        benchmark = bool(os.getenv('BENCHMARK'))
         if benchmark:
-            code += implementation(old if enabled == -1 else source, 'Run', enabled != -1) + BENCH
-        else:
-            code += implementation(old, 'Original', False) + implementation(source, 'Candidate', True) + TEST
-        cpp = p / f'test-{enabled}.cpp'
-        cpp.write_text(code)
-        exe = p / f'test-{enabled}'
-        subprocess.run([compiler, *flags, f'-DSOH3DS_TRIANGLE_PAIR_REUSE={enabled}',
-                        *(['-DBENCHMARK'] if benchmark else []), str(cpp), '-o', str(exe)], check=True)
-        executables.append(exe)
-        if not benchmark:
-            subprocess.run([str(exe)], check=True)
-    if benchmark:
-        results = [[], [], []]
-        checksums = set()
-        for trial in range(9):
-            order = [(trial + offset) % 3 for offset in range(3)]
-            if trial % 2:
-                order.reverse()
-            for index in order:
-                output = subprocess.check_output([str(executables[index]), os.getenv('HOTPATH', 'textured')], text=True).split()
-                results[index].append(float(output[0])); checksums.add(output[1])
-        assert len(checksums) == 1, checksums
-        for label, values in zip(('original', 'switch=0', 'switch=1'), results):
-            print(f'{label} ns/pair: {values}; median={statistics.median(values):.3f}')
-        print(f'host median reduction vs original: {(1-statistics.median(results[2])/statistics.median(results[0]))*100:.2f}%')
-        print(f'host median reduction vs switch=0: {(1-statistics.median(results[2])/statistics.median(results[1]))*100:.2f}%')
+            assert not os.getenv('SANITIZE'), 'Sanitizers distort timings'
+            cpu = int(os.getenv('BENCH_CPU', str(max(os.sched_getaffinity(0)))))
+            os.sched_setaffinity(0, {cpu})
+            print(f'host={os.uname().machine}, cpu={cpu}, workload={os.getenv("HOTPATH", "textured")}, '
+                  f'compiler={subprocess.check_output([compiler, "--version"], text=True).splitlines()[0]}, flags={flags}', flush=True)
+        executables = []
+        for enabled in ((-1, 0, 1) if benchmark else (0, 1)):
+            code = PREAMBLE.replace('TRI_CAPACITY', re.search(r'constexpr size_t MAX_TRI_BUFFER = (\d+);', source).group(1))
+            if benchmark:
+                code += implementation(old if enabled == -1 else source, 'Run', enabled != -1) + BENCH
+            else:
+                code += implementation(old, 'Original', False) + implementation(source, 'Candidate', True) + TEST
+            cpp = p / f'test-{enabled}.cpp'
+            cpp.write_text(code)
+            exe = p / f'test-{enabled}'
+            subprocess.run([compiler, *flags, f'-DSOH3DS_TRIANGLE_PAIR_REUSE={enabled}',
+                            *(['-DBENCHMARK'] if benchmark else []), str(cpp), '-o', str(exe)], check=True)
+            executables.append(exe)
+            if not benchmark:
+                subprocess.run([str(exe)], check=True)
+        if benchmark:
+            results = [[], [], []]
+            checksums = set()
+            for trial in range(9):
+                order = [(trial + offset) % 3 for offset in range(3)]
+                if trial % 2:
+                    order.reverse()
+                for index in order:
+                    output = subprocess.check_output([str(executables[index]), os.getenv('HOTPATH', 'textured')], text=True).split()
+                    results[index].append(float(output[0])); checksums.add(output[1])
+            assert len(checksums) == 1, checksums
+            for label, values in zip(('original', 'switch=0', 'switch=1'), results):
+                print(f'{label} ns/pair: {values}; median={statistics.median(values):.3f}')
+            print(f'host median reduction vs original: {(1-statistics.median(results[2])/statistics.median(results[0]))*100:.2f}%')
+            print(f'host median reduction vs switch=0: {(1-statistics.median(results[2])/statistics.median(results[1]))*100:.2f}%')
+
+
+if __name__ == "__main__":
+    main()

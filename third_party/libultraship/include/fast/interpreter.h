@@ -390,6 +390,8 @@ struct TriStateKey {
 };
 
 struct TriStateCache {
+    // Layout decisions only: colours, clip flags and rectangle state stay live.
+    enum class Emitter : uint8_t { Generic, Shade, StandardFog };
     TriStateKey key;
     ColorCombiner* comb;
     struct ShaderProgram* prg;
@@ -401,6 +403,8 @@ struct TriStateCache {
     // u' = u * uv_mul + uv_add (+ half-texel term applied per call, see GfxSpTri1).
     float uMul[2], vMul[2], uAdd[2], vAdd[2], halfU[2], halfV[2];
     float clampS[2], clampT[2];
+    Emitter emitter;
+    uint8_t emitterFlags, emitterUniformSource, emitterAlphaSource[2];
     bool valid;
 };
 
@@ -436,6 +440,10 @@ class Interpreter {
     void StartFrame();
     void RunGuiOnly();
     void Run(Gfx* commands, const std::unordered_map<Mtx*, MtxF>& mtx_replacements);
+    void Run(Gfx* commands);
+  private:
+    void RunInternal(Gfx* commands, const std::unordered_map<Mtx*, MtxF>* mtx_replacements);
+  public:
     void EndFrame();
     void HandleWindowEvents();
     bool IsFrameReady();
@@ -461,8 +469,12 @@ class Interpreter {
     void UnregisterFbTexture(const void* cpuAddr);
     // SoH-3DS: per-draw state memo for GfxSpTri1 (see TriStateKey).
     void CaptureTriStateKey(TriStateKey* key);
+    bool TriStateMatches() const;
     void DeriveTriState();
+    void SelectTriangleEmitter();
     void EmitTriangle(struct LoadedVertex* const vArr[3], bool isRect);
+    bool TryEmitTriangleCompact(struct LoadedVertex* const vArr[3], bool isRect);
+    bool TryEmitTriangleArm11(struct LoadedVertex* const vArr[3], bool isRect);
 
     void SetNativeDimensions(float width, float height);
     void SetResolutionMultiplier(float multiplier);
@@ -497,6 +509,8 @@ class Interpreter {
     // lists carry stable path pointers; off by default.
     void SetResolvedResourceCacheEnabled(bool enabled);
 
+    bool mCombinedMatrixDirty = false;
+    void UpdateCombinedMatrix();
     void GfxSpMatrix(uint8_t params, const int32_t* addr);
     void GfxSpPopMatrix(uint32_t count);
     void GfxSpVertex(size_t numVertices, size_t destIndex, const F3DVtx* vertices);
@@ -598,6 +612,8 @@ class Interpreter {
     float* mBufVbo; // 3 vertices in a triangle and 32 floats per vtx
     size_t mBufVboLen{};
     size_t mBufVboNumTris{};
+    bool mBufVboCompact = false;
+    CompactVertexLayout mBufVboCompactLayout{};
     GfxWindowBackend* mWapi = nullptr;
     GfxRenderingAPI* mRapi = nullptr;
     std::shared_ptr<GfxDebugger> mGfxDebugger;
@@ -633,7 +649,6 @@ class Interpreter {
 };
 
 void gfx_set_target_ucode(UcodeHandlers ucode);
-void gfx_push_current_dir(char* path);
 int32_t gfx_check_image_signature(const char* imgData);
 const char* gfx_get_shader(int16_t id);
 const char* GfxGetOpcodeName(int8_t opcode);

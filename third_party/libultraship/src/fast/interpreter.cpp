@@ -1,4 +1,7 @@
 #define NOMINMAX
+#ifdef __3DS__
+#include "fast/texture_rows_3ds.h"
+#endif
 
 #include <math.h>
 #include <stdint.h>
@@ -33,6 +36,8 @@
 #include <string>
 
 #include "fast/interpreter.h"
+#include "fast/vertex_transform_3ds.h"
+#include "fast/triangle_emit_3ds.h"
 #include "fast/lus_gbi.h"
 #include "fast/backends/gfx_window_manager_api.h"
 #include "fast/backends/gfx_rendering_api.h"
@@ -59,7 +64,6 @@
 extern "C" uint32_t linearSpaceFree(void);
 #endif
 
-std::stack<std::string> currentDir;
 
 #define SEG_ADDR(seg, addr) (addr | (seg << 24) | 1)
 #define SUPPORT_CHECK(x) assert(x)
@@ -122,18 +126,6 @@ static uint32_t get_attr(Attribute attr) {
     return (*ucode_map)[attr];
 }
 
-static std::string GetPathWithoutFileName(char* filePath) {
-    size_t len = strlen(filePath);
-
-    for (size_t i = len - 1; (long)i >= 0; i--) {
-        if (filePath[i] == '/' || filePath[i] == '\\') {
-            return std::string(filePath).substr(0, i);
-        }
-    }
-
-    return filePath;
-}
-
 constexpr size_t MAX_TRI_BUFFER = 256;
 
 Interpreter::Interpreter() {
@@ -166,7 +158,17 @@ static constexpr float N64_PRIM_DEPTH_MAX = 32767.0f;
 void Interpreter::Flush() {
     if (mBufVboLen > 0) {
         mRapi->SetCurrentPrimDepth((float)mRdp->prim_depth / N64_PRIM_DEPTH_MAX);
-        mRapi->DrawTriangles(mBufVbo, mBufVboLen, mBufVboNumTris);
+#if defined(SOH3DS_COMPACT_VERTEX_STREAM) && SOH3DS_COMPACT_VERTEX_STREAM
+        if (mBufVboCompact) {
+            mRapi->DrawCompactTriangles(mBufVbo, mBufVboNumTris, mBufVboCompactLayout);
+        } else
+#endif
+        {
+            mRapi->DrawTriangles(mBufVbo, mBufVboLen, mBufVboNumTris);
+        }
+#if defined(SOH3DS_COMPACT_VERTEX_STREAM) && SOH3DS_COMPACT_VERTEX_STREAM
+        mBufVboCompact = false;
+#endif
         mBufVboLen = 0;
         mBufVboNumTris = 0;
     }
@@ -1716,10 +1718,15 @@ void Interpreter::GfxSpMatrix(uint8_t parameters, const int32_t* addr) {
         return;
     }
 
-    if (auto it = mCurMtxReplacements->find((Mtx*)addr); it != mCurMtxReplacements->end()) {
+    const MtxF* replacement = nullptr;
+    if (mCurMtxReplacements) {
+        auto it = mCurMtxReplacements->find((Mtx*)addr);
+        if (it != mCurMtxReplacements->end()) replacement = &it->second;
+    }
+    if (replacement) {
         for (int i = 0; i < 4; i++) {
             for (int j = 0; j < 4; j++) {
-                float v = it->second.mf[i][j];
+                float v = replacement->mf[i][j];
                 int as_int = (int)(v * 65536.0f);
                 matrix[i][j] = as_int * (1.0f / 65536.0f);
             }
@@ -1731,8 +1738,8 @@ void Interpreter::GfxSpMatrix(uint8_t parameters, const int32_t* addr) {
             for (int j = 0; j < 4; j += 2) {
                 int32_t int_part = addr[i * 2 + j / 2];
                 uint32_t frac_part = addr[8 + i * 2 + j / 2];
-                matrix[i][j] = (int32_t)((int_part & 0xffff0000) | (frac_part >> 16)) / 65536.0f;
-                matrix[i][j + 1] = (int32_t)((int_part << 16) | (frac_part & 0xffff)) / 65536.0f;
+                matrix[i][j] = (int32_t)((int_part & 0xffff0000) | (frac_part >> 16)) * (1.0f / 65536.0f);
+                matrix[i][j + 1] = (int32_t)((int_part << 16) | (frac_part & 0xffff)) * (1.0f / 65536.0f);
             }
         }
 #else
@@ -1767,20 +1774,26 @@ void Interpreter::GfxSpMatrix(uint8_t parameters, const int32_t* addr) {
         }
         mRsp->lights_changed = 1;
     }
-    MatrixMul(mRsp->MP_matrix, mRsp->modelview_matrix_stack[mRsp->modelview_matrix_stack_size - 1], mRsp->P_matrix);
+    mCombinedMatrixDirty = true;
 }
 
 void Interpreter::GfxSpPopMatrix(uint32_t count) {
-    while (count--) {
-        if (mRsp->modelview_matrix_stack_size > 1) {
-            --mRsp->modelview_matrix_stack_size;
-            if (mRsp->modelview_matrix_stack_size > 0) {
-                MatrixMul(mRsp->MP_matrix, mRsp->modelview_matrix_stack[mRsp->modelview_matrix_stack_size - 1],
-                          mRsp->P_matrix);
-            }
-        }
+    const uint32_t available = mRsp->modelview_matrix_stack_size > 1 ?
+                                   mRsp->modelview_matrix_stack_size - 1 : 0;
+    const uint32_t popped = std::min(count, available);
+    if (popped) {
+        mRsp->modelview_matrix_stack_size -= popped;
+        mCombinedMatrixDirty = true;
     }
     mRsp->lights_changed = true;
+}
+
+void Interpreter::UpdateCombinedMatrix() {
+    if (mCombinedMatrixDirty) {
+        MatrixMul(mRsp->MP_matrix, mRsp->modelview_matrix_stack[mRsp->modelview_matrix_stack_size - 1],
+                  mRsp->P_matrix);
+        mCombinedMatrixDirty = false;
+    }
 }
 
 float Interpreter::AdjXForAspectRatio(float x) const {
@@ -1825,6 +1838,30 @@ void Interpreter::GfxSpVertex(size_t n_vertices, size_t dest_index, const F3DVtx
     if (dest_index >= MAX_VERTICES + 4 || n_vertices > MAX_VERTICES + 4 - dest_index) {
         return;
     }
+    // Several matrix commands can precede a vertex load. Only the final
+    // modelview/projection pair is consumed; retain its result until changed.
+    if (n_vertices != 0) UpdateCombinedMatrix();
+#if defined(__3DS__) && SOH3DS_ARM11_VERTEX_ASM && !defined(GBI_FLOATS)
+    static_assert(sizeof(F3DVtx) == 16 && offsetof(F3DVtx_t, ob) == 0);
+    static_assert(sizeof(LoadedVertex) == 32 && offsetof(LoadedVertex, x) == 0 &&
+                  offsetof(LoadedVertex, y) == 4 && offsetof(LoadedVertex, z) == 8 &&
+                  offsetof(LoadedVertex, w) == 12);
+    // Preserve ordered reads if display-list data is backed by RSP state:
+    // lighting can update coefficients between vertices, and loaded vertex
+    // writes can overwrite later inputs. Subtraction avoids address overflow.
+    // The bounds check above limits the byte count to a small value.
+    const uintptr_t src = reinterpret_cast<uintptr_t>(vertices);
+    const uintptr_t state = reinterpret_cast<uintptr_t>(mRsp);
+    const size_t srcBytes = n_vertices * sizeof(F3DVtx);
+    const bool inputDisjoint = src >= state ? src - state >= sizeof(*mRsp) : state - src >= srcBytes;
+    // Physical Old 3DS loader trials support a large-batch candidate. Keep
+    // small batches scalar; whole-game validation is still pending.
+    const bool batchTransformed = vertices != nullptr && n_vertices >= 32 && inputDisjoint;
+    if (batchTransformed) {
+        Soh3dsTransformVerticesArm11(vertices, &mRsp->loaded_vertices[dest_index], mRsp->MP_matrix,
+                                    static_cast<uint32_t>(n_vertices));
+    }
+#endif
     for (size_t i = 0; i < n_vertices; i++, dest_index++) {
         const F3DVtx_t* v = &vertices[i].v;
         const F3DVtx_tn* vn = &vertices[i].n;
@@ -1834,14 +1871,25 @@ void Interpreter::GfxSpVertex(size_t n_vertices, size_t dest_index, const F3DVtx
             return;
         }
 
-        float x = v->ob[0] * mRsp->MP_matrix[0][0] + v->ob[1] * mRsp->MP_matrix[1][0] +
+        float x, y, z, w;
+#if defined(__3DS__) && SOH3DS_ARM11_VERTEX_ASM && !defined(GBI_FLOATS)
+        if (batchTransformed) {
+            x = d->x;
+            y = d->y;
+            z = d->z;
+            w = d->w;
+        } else
+#endif
+        {
+            x = v->ob[0] * mRsp->MP_matrix[0][0] + v->ob[1] * mRsp->MP_matrix[1][0] +
                   v->ob[2] * mRsp->MP_matrix[2][0] + mRsp->MP_matrix[3][0];
-        float y = v->ob[0] * mRsp->MP_matrix[0][1] + v->ob[1] * mRsp->MP_matrix[1][1] +
+            y = v->ob[0] * mRsp->MP_matrix[0][1] + v->ob[1] * mRsp->MP_matrix[1][1] +
                   v->ob[2] * mRsp->MP_matrix[2][1] + mRsp->MP_matrix[3][1];
-        float z = v->ob[0] * mRsp->MP_matrix[0][2] + v->ob[1] * mRsp->MP_matrix[1][2] +
+            z = v->ob[0] * mRsp->MP_matrix[0][2] + v->ob[1] * mRsp->MP_matrix[1][2] +
                   v->ob[2] * mRsp->MP_matrix[2][2] + mRsp->MP_matrix[3][2];
-        float w = v->ob[0] * mRsp->MP_matrix[0][3] + v->ob[1] * mRsp->MP_matrix[1][3] +
+            w = v->ob[0] * mRsp->MP_matrix[0][3] + v->ob[1] * mRsp->MP_matrix[1][3] +
                   v->ob[2] * mRsp->MP_matrix[2][3] + mRsp->MP_matrix[3][3];
+        }
 
         float world_pos[3] = { 0.0 };
         if (mRsp->geometry_mode & G_LIGHTING_POSITIONAL) {
@@ -2110,9 +2158,7 @@ bool Interpreter::GfxSpTri1Impl(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3
 #endif
     {
         Soh3dsProfileScope profile(Soh3dsProfileSection::TriangleKey);
-        TriStateKey key;
-        CaptureTriStateKey(&key);
-        needsDerive = !mTriState.valid || !(mTriState.key == key);
+        needsDerive = !mTriState.valid || !TriStateMatches();
     }
     if (needsDerive) {
         DeriveTriState();
@@ -2181,6 +2227,54 @@ void Interpreter::CaptureTriStateKey(TriStateKey* key) {
         key->blended[i] = mRdp->loaded_texture[i].blended;
         key->textures_changed[i] = mRdp->textures_changed[i];
     }
+}
+
+// Equivalent to CaptureTriStateKey followed by fieldwise equality, without
+// writing a temporary key on every equality hit. Preserve ordinary float
+// equality: NaNs invalidate and signed zero compares equal.
+bool Interpreter::TriStateMatches() const {
+    const TriStateKey& key = mTriState.key;
+    if (key.combine_mode != mRdp->combine_mode ||
+        key.other_mode_l != mRdp->other_mode_l || key.other_mode_h != mRdp->other_mode_h ||
+        key.geometry_mode != mRsp->geometry_mode || key.extra_geometry_mode != mRsp->extra_geometry_mode ||
+        key.shader_id != (mShaderStack.empty() ? -1 : (int32_t)mShaderStack.top()) ||
+        key.shaderProgram != mRenderingState.mShaderProgram ||
+        key.first_tile_index != mRdp->first_tile_index ||
+        key.depth_test_and_mask != mRenderingState.depth_test_and_mask ||
+        key.grayscale != mRdp->grayscale || key.decal_mode != mRenderingState.decal_mode ||
+        key.alpha_blend != mRenderingState.alpha_blend) {
+        return false;
+    }
+    for (int i = 0; i < 2; ++i) {
+        if (key.textures[i] != mRenderingState.mTextures[i] ||
+            key.masked[i] != mRdp->loaded_texture[i].masked ||
+            key.blended[i] != mRdp->loaded_texture[i].blended ||
+            key.textures_changed[i] != mRdp->textures_changed[i]) {
+            return false;
+        }
+        const uint32_t tile = i == 1 && mRdp->first_tile_index >= 2
+                                  ? mRdp->first_tile_index : mRdp->first_tile_index + i;
+        const auto& src = mRdp->texture_tile[tile];
+        const auto& cached = key.tile[i];
+        if (cached.uls != src.uls || cached.ult != src.ult ||
+            cached.lrs != src.lrs || cached.lrt != src.lrt ||
+            cached.line_size_bytes != src.line_size_bytes || cached.siz != src.siz ||
+            cached.cms != src.cms || cached.cmt != src.cmt ||
+            cached.masks != src.masks || cached.maskt != src.maskt ||
+            cached.shifts != src.shifts || cached.shiftt != src.shiftt || cached.tmem_index != src.tmem_index) {
+            return false;
+        }
+        const auto& loaded = mRdp->loaded_texture[src.tmem_index];
+        const auto& previous = key.loaded[i];
+        if (previous.orig_size_bytes != loaded.orig_size_bytes || previous.size_bytes != loaded.size_bytes ||
+            previous.full_image_line_size_bytes != loaded.full_image_line_size_bytes ||
+            previous.line_size_bytes != loaded.line_size_bytes ||
+            previous.h_byte_scale != loaded.raw_tex_metadata.h_byte_scale ||
+            previous.v_pixel_scale != loaded.raw_tex_metadata.v_pixel_scale) {
+            return false;
+        }
+    }
+    return true;
 }
 
 // Everything GfxSpTri1 derives from RDP/RSP state rather than from the
@@ -2342,7 +2436,11 @@ void Interpreter::DeriveTriState() {
                 line_size = 1;
             }
 
+#ifdef __3DS__
+            tex_height[i] = TextureRows3DS(tex_size_bytes, line_size);
+#else
             tex_height[i] = tex_size_bytes / line_size;
+#endif
             switch (mRdp->texture_tile[tile].siz) {
                 case G_IM_SIZ_4b:
                     line_size <<= 1;
@@ -2479,11 +2577,236 @@ void Interpreter::DeriveTriState() {
         ts.clampS[t] = (tex_width2[t] - 0.5f) * invW;
         ts.clampT[t] = (tex_height2[t] - 0.5f) * invH;
     }
+    SelectTriangleEmitter();
 }
+
+// Cache both supported and unsupported layouts once per derived material. Never
+// cache colour values here: primitive/environment/fog/key colours are absent
+// from TriStateKey and can change while this layout remains valid.
+void Interpreter::SelectTriangleEmitter() {
+    TriStateCache& ts = mTriState;
+    ts.emitter = TriStateCache::Emitter::Generic;
+    ts.emitterFlags = ts.emitterUniformSource = 0;
+    ts.emitterAlphaSource[0] = ts.emitterAlphaSource[1] = 0;
+#if (defined(SOH3DS_ARM11_TRIANGLE_EMIT) && SOH3DS_ARM11_TRIANGLE_EMIT) || \
+    (defined(SOH3DS_COMPACT_VERTEX_STREAM) && SOH3DS_COMPACT_VERTEX_STREAM)
+    if (ts.use_fog && !ts.use_blend_color && !ts.use_grayscale &&
+        ts.tm == 0 && ts.usedTextures[0] && ts.usedTextures[1] && ts.numInputs == 2 &&
+        ts.comb->shader_input_mapping[0][0] == G_CCMUX_SHADE &&
+        (ts.comb->shader_input_mapping[0][1] == G_CCMUX_PRIMITIVE ||
+         ts.comb->shader_input_mapping[0][1] == G_CCMUX_ENVIRONMENT)) {
+        if (ts.use_alpha) {
+            for (unsigned input = 0; input < 2; ++input) {
+                const uint8_t source = ts.comb->shader_input_mapping[1][input];
+                switch (source) {
+                    case 0: case G_CCMUX_SHADE: case G_CCMUX_PRIMITIVE:
+                    case G_CCMUX_ENVIRONMENT: case G_CCMUX_KEY_CENTER: case G_CCMUX_KEY_SCALE:
+                        ts.emitterAlphaSource[input] = source;
+                        break;
+                    default: return;
+                }
+            }
+        }
+        ts.emitter = TriStateCache::Emitter::StandardFog;
+        ts.emitterFlags = ts.use_alpha ? 1u : 0u;
+        ts.emitterUniformSource = ts.comb->shader_input_mapping[0][1];
+        return;
+    }
+    if (!ts.use_alpha || ts.use_fog || ts.use_grayscale || ts.usedTextures[1] || ts.tm != 0 ||
+        (ts.numInputs != 1 && ts.numInputs != 2) ||
+        ts.comb->shader_input_mapping[0][0] != G_CCMUX_SHADE ||
+        ts.comb->shader_input_mapping[1][0] != G_CCMUX_SHADE) {
+        return;
+    }
+    if (ts.numInputs == 2) {
+        const uint8_t mapping = ts.comb->shader_input_mapping[0][1];
+        if (mapping != ts.comb->shader_input_mapping[1][1] ||
+            (mapping != G_CCMUX_PRIMITIVE && mapping != G_CCMUX_ENVIRONMENT)) {
+            return;
+        }
+        ts.emitterUniformSource = mapping;
+    }
+    ts.emitter = TriStateCache::Emitter::Shade;
+    ts.emitterFlags = (ts.usedTextures[0] ? 1u : 0u) | (ts.numInputs == 2 ? 2u : 0u);
+#endif
+}
+
+#if defined(SOH3DS_ARM11_TRIANGLE_EMIT) && SOH3DS_ARM11_TRIANGLE_EMIT
+bool Interpreter::TryEmitTriangleArm11(struct LoadedVertex* const v_arr[3], bool is_rect) {
+    const TriStateCache& ts = mTriState;
+    if (ts.emitter == TriStateCache::Emitter::Generic) {
+        return false;
+    }
+    if (ts.emitter == TriStateCache::Emitter::StandardFog) {
+        static_assert(sizeof(Soh3dsFogEmitParams) == 84 &&
+                      offsetof(Soh3dsFogEmitParams, texture) == 4 &&
+                      sizeof(Soh3dsFogEmitParams::Texture) == 24 &&
+                      offsetof(Soh3dsFogEmitParams, fog) == 52 &&
+                      offsetof(Soh3dsFogEmitParams, uniform) == 64 &&
+                      offsetof(Soh3dsFogEmitParams, alpha) == 76);
+        Soh3dsFogEmitParams params;
+        params.flags = ts.emitterFlags | (mClipParameters.invertY ? 4u : 0u) |
+                       (mClipParameters.z_is_from_0_to_1 ? 8u : 0u) | (is_rect ? 16u : 0u);
+        constexpr float kInv255 = 1.0f / 255.0f;
+        if (ts.use_alpha) {
+            for (unsigned input = 0; input < 2; ++input) {
+                uint8_t alpha;
+                switch (ts.emitterAlphaSource[input]) {
+                    case 0: alpha = 0; break;
+                    case G_CCMUX_SHADE: params.alpha[input] = 1.0f; continue; // Standard fog forces shade alpha to 1.
+                    case G_CCMUX_PRIMITIVE: alpha = mRdp->prim_color.a; break;
+                    case G_CCMUX_ENVIRONMENT: alpha = mRdp->env_color.a; break;
+                    case G_CCMUX_KEY_CENTER: alpha = mRdp->key_center.a; break;
+                    case G_CCMUX_KEY_SCALE: alpha = mRdp->key_scale.a; break;
+                    default: __builtin_unreachable(); // Rejected by SelectTriangleEmitter.
+                }
+                params.alpha[input] = alpha * kInv255;
+            }
+        }
+        for (unsigned t = 0; t < 2; ++t) {
+            params.texture[t] = { ts.uMul[t], ts.vMul[t], ts.uAdd[t], ts.vAdd[t],
+                                  ts.halfU[t], ts.halfV[t] };
+        }
+        params.fog[0] = mRdp->fog_color.r * kInv255;
+        params.fog[1] = mRdp->fog_color.g * kInv255;
+        params.fog[2] = mRdp->fog_color.b * kInv255;
+        const RGBA& uniform = ts.emitterUniformSource == G_CCMUX_PRIMITIVE
+                                  ? mRdp->prim_color : mRdp->env_color;
+        params.uniform[0] = uniform.r * kInv255;
+        params.uniform[1] = uniform.g * kInv255;
+        params.uniform[2] = uniform.b * kInv255;
+        const void* vertices[3] = { v_arr[0], v_arr[1], v_arr[2] };
+        mBufVboLen = Soh3dsEmitFogTriangleArm11(mBufVbo + mBufVboLen, vertices, &params) - mBufVbo;
+        return true;
+    }
+    const RGBA* uniform = ts.emitterUniformSource == G_CCMUX_PRIMITIVE ? &mRdp->prim_color :
+                          ts.emitterUniformSource == G_CCMUX_ENVIRONMENT ? &mRdp->env_color : nullptr;
+    static_assert(sizeof(LoadedVertex) == 32 && offsetof(LoadedVertex, x) == 0 &&
+                  offsetof(LoadedVertex, y) == 4 && offsetof(LoadedVertex, z) == 8 &&
+                  offsetof(LoadedVertex, w) == 12 && offsetof(LoadedVertex, u) == 16 &&
+                  offsetof(LoadedVertex, v) == 20 && offsetof(LoadedVertex, color) == 24 &&
+                  sizeof(RGBA) == 4 && offsetof(RGBA, r) == 0 && offsetof(RGBA, g) == 1 &&
+                  offsetof(RGBA, b) == 2 && offsetof(RGBA, a) == 3);
+    static_assert(sizeof(Soh3dsTriangleEmitParams) == 44 &&
+                  offsetof(Soh3dsTriangleEmitParams, uMul) == 4 &&
+                  offsetof(Soh3dsTriangleEmitParams, halfV) == 24 &&
+                  offsetof(Soh3dsTriangleEmitParams, uniform) == 28);
+    Soh3dsTriangleEmitParams params;
+    params.flags = ts.emitterFlags |
+                   (mClipParameters.invertY ? 4u : 0u) |
+                   (mClipParameters.z_is_from_0_to_1 ? 8u : 0u) | (is_rect ? 16u : 0u);
+    if (ts.usedTextures[0]) {
+        params.uMul = ts.uMul[0]; params.vMul = ts.vMul[0];
+        params.uAdd = ts.uAdd[0]; params.vAdd = ts.vAdd[0];
+        params.halfU = ts.halfU[0]; params.halfV = ts.halfV[0];
+    }
+    if (uniform) {
+        constexpr float kInv255 = 1.0f / 255.0f;
+        params.uniform[0] = uniform->r * kInv255;
+        params.uniform[1] = uniform->g * kInv255;
+        params.uniform[2] = uniform->b * kInv255;
+        params.uniform[3] = uniform->a * kInv255;
+    }
+    const void* vertices[3] = { v_arr[0], v_arr[1], v_arr[2] };
+    mBufVboLen = Soh3dsEmitTriangleArm11(mBufVbo + mBufVboLen, vertices, &params) - mBufVbo;
+    return true;
+}
+#endif
+
+#if defined(SOH3DS_COMPACT_VERTEX_STREAM) && SOH3DS_COMPACT_VERTEX_STREAM
+bool Interpreter::TryEmitTriangleCompact(struct LoadedVertex* const v_arr[3], bool is_rect) {
+    // Frame-abort recovery clears the public counts directly. An empty buffer
+    // therefore starts a new representation/layout even after an exception.
+    if (mBufVboLen == 0) mBufVboCompact = false;
+    const TriStateCache& ts = mTriState;
+    if (ts.emitter == TriStateCache::Emitter::Generic) {
+        if (mBufVboCompact) {
+            // DeriveTriState may have changed ts already; the pending batch
+            // must be reconstructed using the layout captured at its start.
+            ExpandCompactVerticesInPlace(mBufVbo, mBufVboNumTris * 3, mBufVboCompactLayout);
+            mBufVboLen = mBufVboNumTris * 3 * mBufVboCompactLayout.StrideFloats();
+            mBufVboCompact = false;
+        }
+        return false;
+    }
+    // Never split a batch merely to change representation: later inputs use
+    // the first vertex's constants. Once floats exist, stay float until Flush.
+    if (mBufVboLen != 0 && !mBufVboCompact) return false;
+    if (!mBufVboCompact) {
+        if (!mRapi->SupportsCompactVertexStream()) return false;
+        mBufVboCompactLayout = { 1, ts.numInputs,
+            static_cast<uint8_t>((ts.usedTextures[0] ? 1 : 0) | (ts.usedTextures[1] ? 2 : 0)),
+            ts.use_alpha, ts.use_fog };
+        mBufVboCompact = true;
+    }
+    const RGBA* uniform = ts.emitterUniformSource == G_CCMUX_PRIMITIVE ? &mRdp->prim_color : &mRdp->env_color;
+    uint8_t alpha[2] = { 255, 255 };
+    if (ts.use_fog && ts.use_alpha) {
+        for (unsigned input = 0; input < 2; ++input) {
+            switch (ts.emitterAlphaSource[input]) {
+                case 0: alpha[input] = 0; break;
+                case G_CCMUX_SHADE: alpha[input] = 255; break;
+                case G_CCMUX_PRIMITIVE: alpha[input] = mRdp->prim_color.a; break;
+                case G_CCMUX_ENVIRONMENT: alpha[input] = mRdp->env_color.a; break;
+                case G_CCMUX_KEY_CENTER: alpha[input] = mRdp->key_center.a; break;
+                case G_CCMUX_KEY_SCALE: alpha[input] = mRdp->key_scale.a; break;
+                default: __builtin_unreachable(); // Static selector rejects other sources.
+            }
+        }
+    }
+    for (unsigned vertex = 0; vertex < 3; ++vertex) {
+        const LoadedVertex& source = *v_arr[vertex];
+        CompactVertex record{};
+        float z = source.z, w = source.w;
+        if (mClipParameters.z_is_from_0_to_1) z = (z + w) * 0.5f;
+        record.position[0] = source.x;
+        record.position[1] = mClipParameters.invertY ? -source.y : source.y;
+        record.position[2] = z;
+        record.position[3] = w;
+        for (unsigned texture = 0; texture < 2; ++texture) {
+            if (!ts.usedTextures[texture]) continue;
+            float u = source.u * ts.uMul[texture] + ts.uAdd[texture];
+            float v = source.v * ts.vMul[texture] + ts.vAdd[texture];
+            if (!is_rect) { u += ts.halfU[texture]; v += ts.halfV[texture]; }
+            record.texcoord[texture][0] = u;
+            record.texcoord[texture][1] = v;
+        }
+        std::memcpy(record.input[0], &source.color, 4);
+        if (ts.numInputs == 2) std::memcpy(record.input[1], uniform, 4);
+        if (ts.use_fog) {
+            std::memcpy(record.fog, &mRdp->fog_color, 4);
+            record.fog[3] = source.color.a;
+            record.input[0][3] = alpha[0];
+            record.input[1][3] = alpha[1];
+        }
+        WriteCompactVertex(mBufVbo, mBufVboNumTris * 3 + vertex, record);
+    }
+    // Keep the logical float length/capacity unchanged in both representations.
+    mBufVboLen += 3 * mBufVboCompactLayout.StrideFloats();
+    return true;
+}
+#endif
 
 void Interpreter::EmitTriangle(struct LoadedVertex* const v_arr[3], bool is_rect) {
     // Includes a capacity-triggered Flush and its nested backend work.
     Soh3dsProfileScope profile(Soh3dsProfileSection::TriangleEmit);
+#if defined(SOH3DS_COMPACT_VERTEX_STREAM) && SOH3DS_COMPACT_VERTEX_STREAM
+    if (TryEmitTriangleCompact(v_arr, is_rect)) {
+        Soh3dsProfileVertexBatch(Soh3dsVertexPath::Compact, 1);
+        if (++mBufVboNumTris == MAX_TRI_BUFFER) Flush();
+        return;
+    }
+#endif
+#if defined(SOH3DS_ARM11_TRIANGLE_EMIT) && SOH3DS_ARM11_TRIANGLE_EMIT
+    if (TryEmitTriangleArm11(v_arr, is_rect)) {
+        Soh3dsProfileVertexBatch(Soh3dsVertexPath::Arm11, 1);
+        if (++mBufVboNumTris == MAX_TRI_BUFFER) {
+            Flush();
+        }
+        return;
+    }
+#endif
+    Soh3dsProfileVertexBatch(Soh3dsVertexPath::Generic, 1);
     const TriStateCache& ts = mTriState;
     ColorCombiner* comb = ts.comb;
     const uint8_t numInputs = ts.numInputs;
@@ -4249,7 +4572,9 @@ bool gfx_dl_index_handler(F3DGfx** cmd0) {
 
 // TODO handle special OTR opcodes later...
 bool gfx_pushcd_handler_custom(F3DGfx** cmd0) {
-    gfx_push_current_dir((char*)(*cmd0)->words.w1);
+    // G_PUSHCD carries the directory of the display list being entered. Nothing in this tree
+    // ever read it back: the stack it was pushed onto had no pop and no reader, and was thrown
+    // away at the end of every RunCommands. Consuming the command is the whole job.
     return false;
 }
 
@@ -4893,18 +5218,28 @@ bool gfx_set_tile_size_lerp_handler_rdp(F3DGfx** cmd0) {
     Interpreter* gfx = sInterpreterRaw;
 
     int tile = C1(24, 3);
-    float coords[8];
-    for (int i = 0; i < 8; i += 2) {
+    if (!gfx->mCurMtxReplacements) {
+        // Consume the full command, but read only its native-frame endpoint.
+        *cmd0 += 3;
+        memcpy(&gfx->mRdp->texture_tile[tile].uls, &(*cmd0)->words.w0, sizeof(float));
+        memcpy(&gfx->mRdp->texture_tile[tile].ult, &(*cmd0)->words.w1, sizeof(float));
         ++(*cmd0);
-        memcpy(&coords[i], &(*cmd0)->words.w0, sizeof(float));
-        memcpy(&coords[i + 1], &(*cmd0)->words.w1, sizeof(float));
-    }
+        memcpy(&gfx->mRdp->texture_tile[tile].lrs, &(*cmd0)->words.w0, sizeof(float));
+        memcpy(&gfx->mRdp->texture_tile[tile].lrt, &(*cmd0)->words.w1, sizeof(float));
+    } else {
+        float coords[8];
+        for (int i = 0; i < 8; i += 2) {
+            ++(*cmd0);
+            memcpy(&coords[i], &(*cmd0)->words.w0, sizeof(float));
+            memcpy(&coords[i + 1], &(*cmd0)->words.w1, sizeof(float));
+        }
 
-    float t = gfx->mInterpolationT;
-    gfx->mRdp->texture_tile[tile].uls = coords[0] + t * (coords[4] - coords[0]);
-    gfx->mRdp->texture_tile[tile].ult = coords[1] + t * (coords[5] - coords[1]);
-    gfx->mRdp->texture_tile[tile].lrs = coords[2] + t * (coords[6] - coords[2]);
-    gfx->mRdp->texture_tile[tile].lrt = coords[3] + t * (coords[7] - coords[3]);
+        float t = gfx->mInterpolationT;
+        gfx->mRdp->texture_tile[tile].uls = coords[0] + t * (coords[4] - coords[0]);
+        gfx->mRdp->texture_tile[tile].ult = coords[1] + t * (coords[5] - coords[1]);
+        gfx->mRdp->texture_tile[tile].lrs = coords[2] + t * (coords[6] - coords[2]);
+        gfx->mRdp->texture_tile[tile].lrt = coords[3] + t * (coords[7] - coords[3]);
+    }
     gfx->mRdp->textures_changed[0] = true;
     gfx->mRdp->textures_changed[1] = true;
 
@@ -5433,7 +5768,66 @@ static void gfx_set_ucode_handler(UcodeHandlers ucode) {
     }
 }
 
-static void gfx_step() {
+// A token lives only inside one uninterrupted run of identical triangle
+// commands. Each triangle still performs its ordinary clipping/culling and
+// emits the same vertices. Derivation, viewport work and capacity flushes
+// revoke the token through GfxSpTri1Impl's existing return value.
+static bool gfx_run_triangles(GfxOpcodeHandlerFunc handler, F3DGfx*& cmd) {
+#if SOH3DS_TRIANGLE_RUN_REUSE && SOH3DS_TRIANGLE_PAIR_REUSE
+    unsigned kind;
+    if (handler == gfx_tri2_handler_f3dex) kind = 0;
+    else if (handler == gfx_tri1_handler_f3dex2) kind = 1;
+    else if (handler == gfx_tri1_handler_f3dex) kind = 2;
+    else if (handler == gfx_tri1_handler_f3d) kind = 3;
+    else if (handler == gfx_quad_handler_f3dex2) kind = 4;
+    else if (handler == gfx_quad_handler_f3dex) kind = 5;
+    else if (handler == gfx_tri1_otr_handler_f3dex2) kind = 6;
+    else return false;
+
+    Interpreter* gfx = sInterpreterRaw;
+    const auto ucode = ucode_handler_index;
+    const auto opcode = cmd->words.w0 >> 24;
+    bool reuse = false;
+    do {
+        switch (kind) {
+            case 0:
+                reuse = gfx->GfxSpTri1Impl(C0(17, 7), C0(9, 7), C0(1, 7), false, reuse);
+                reuse = gfx->GfxSpTri1Impl(C1(17, 7), C1(9, 7), C1(1, 7), false, reuse);
+                break;
+            case 1:
+                reuse = gfx->GfxSpTri1Impl(C0(16, 8) / 2, C0(8, 8) / 2, C0(0, 8) / 2, false, reuse);
+                break;
+            case 2:
+                reuse = gfx->GfxSpTri1Impl(C1(17, 7), C1(9, 7), C1(1, 7), false, reuse);
+                break;
+            case 3:
+                reuse = gfx->GfxSpTri1Impl(C1(16, 8) / 10, C1(8, 8) / 10, C1(0, 8) / 10, false, reuse);
+                break;
+            case 4:
+                reuse = gfx->GfxSpTri1Impl(C0(16, 8) / 2, C0(8, 8) / 2, C0(0, 8) / 2, false, reuse);
+                reuse = gfx->GfxSpTri1Impl(C1(16, 8) / 2, C1(8, 8) / 2, C1(0, 8) / 2, false, reuse);
+                break;
+            case 5:
+                reuse = gfx->GfxSpTri1Impl(C1(16, 8) / 2, C1(8, 8) / 2, C1(0, 8) / 2, false, reuse);
+                reuse = gfx->GfxSpTri1Impl(C1(16, 8) / 2, C1(0, 8) / 2, C1(24, 8) / 2, false, reuse);
+                break;
+            case 6:
+                reuse = gfx->GfxSpTri1Impl((uint8_t)(cmd->words.w0 & 0xffff),
+                                          (uint8_t)(cmd->words.w1 >> 16),
+                                          (uint8_t)(cmd->words.w1 & 0xffff), false, reuse);
+                break;
+        }
+        ++cmd;
+    } while ((cmd->words.w0 >> 24) == opcode && ucode_handler_index == ucode && sInterpreterRaw == gfx);
+    return true;
+#else
+    (void)handler;
+    (void)cmd;
+    return false;
+#endif
+}
+
+static void gfx_step(bool allowTriangleRun = false) {
     auto& cmd = g_exec_stack.currCmd();
     auto cmd0 = cmd;
     int8_t opcode = (int8_t)(cmd->words.w0 >> 24);
@@ -5475,7 +5869,11 @@ static void gfx_step() {
                 return;
             }
         }
-        if (otrHandlers.at(opcode).second(&cmd)) {
+        const auto handler = otrHandlers.at(opcode).second;
+        if (allowTriangleRun && gfx_run_triangles(handler, cmd)) {
+            return;
+        }
+        if (handler(&cmd)) {
             return;
         }
     } else if (rdpHandlers.contains(opcode)) {
@@ -5484,7 +5882,11 @@ static void gfx_step() {
         }
     } else if (ucode_handler_index < ucode_handlers.size()) {
         if (ucode_handlers[ucode_handler_index]->contains(opcode)) {
-            if (ucode_handlers[ucode_handler_index]->at(opcode).second(&cmd)) {
+            const auto handler = ucode_handlers[ucode_handler_index]->at(opcode).second;
+            if (allowTriangleRun && gfx_run_triangles(handler, cmd)) {
+                return;
+            }
+            if (handler(&cmd)) {
                 return;
             }
         } else {
@@ -5503,6 +5905,7 @@ void Interpreter::SpReset() {
         mShaderStack.pop();
     }
     mRsp->modelview_matrix_stack_size = 1;
+    mCombinedMatrixDirty = true;
     mRsp->current_num_lights = 2;
     mRsp->lights_changed = true;
     mRsp->lookat[0].dir[0] = 0;
@@ -5726,12 +6129,20 @@ void Interpreter::RunGuiOnly() {
 }
 
 void Interpreter::Run(Gfx* commands, const std::unordered_map<Mtx*, MtxF>& mtx_replacements) {
+    RunInternal(commands, &mtx_replacements);
+}
+
+void Interpreter::Run(Gfx* commands) {
+    RunInternal(commands, nullptr);
+}
+
+void Interpreter::RunInternal(Gfx* commands, const std::unordered_map<Mtx*, MtxF>* mtx_replacements) {
     SpReset();
 
     mGetPixelDepthPending.clear();
     mGetPixelDepthCached.clear();
 
-    mCurMtxReplacements = &mtx_replacements;
+    mCurMtxReplacements = mtx_replacements;
 
     mRapi->UpdateFramebufferParameters(0, mGfxCurrentWindowDimensions.width, mGfxCurrentWindowDimensions.height, 1,
                                        false, true, true, !mRendersToFb);
@@ -5750,7 +6161,8 @@ void Interpreter::Run(Gfx* commands, const std::unordered_map<Mtx*, MtxF>& mtx_r
     while (!g_exec_stack.cmd_stack.empty()) {
         auto cmd = g_exec_stack.cmd_stack.top();
 
-        if (dbg->IsDebugging()) {
+        const bool debugging = dbg->IsDebugging();
+        if (debugging) {
             g_exec_stack.gfx_path.push_back(cmd);
             if (dbg->HasBreakPoint(g_exec_stack.gfx_path)) {
                 // On a breakpoint with the active framebuffer still set, we need to reset back to prevent
@@ -5764,12 +6176,16 @@ void Interpreter::Run(Gfx* commands, const std::unordered_map<Mtx*, MtxF>& mtx_r
             }
             g_exec_stack.gfx_path.pop_back();
         }
+        // Debugger and command tracing require one dispatch per command.
+#ifdef USE_GBI_TRACE
         gfx_step();
+#else
+        gfx_step(!debugging);
+#endif
     }
 
     Flush();
     mGfxFrameBuffer = 0;
-    currentDir = std::stack<std::string>();
 
     if (mRendersToFb) {
         mRapi->StartDrawToFramebuffer(0, 1);
@@ -5914,13 +6330,6 @@ uint16_t Interpreter::GetPixelDepth(float x, float y) {
     mGetPixelDepthPending.clear();
 
     return mGetPixelDepthCached.find(std::make_pair(x, y))->second;
-}
-
-void gfx_push_current_dir(char* path) {
-    if (gfx_check_image_signature(path) == 1)
-        path = &path[7];
-
-    currentDir.push(GetPathWithoutFileName(path));
 }
 
 int32_t gfx_check_image_signature(const char* imgData) {

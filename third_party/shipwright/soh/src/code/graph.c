@@ -1,3 +1,4 @@
+#include "fast/backends/game_profile_3ds.h"
 #include "global.h"
 #include "vt.h"
 #include "regs.h"
@@ -231,8 +232,13 @@ void Graph_TaskSet00(GraphicsContext* gfxCtx) {
     task->ucode_data_size = 0x800;
     task->dram_stack = (u64*)gGfxSPTaskStack;
     task->dram_stack_size = sizeof(gGfxSPTaskStack);
+#ifdef __3DS__
+    task->output_buff = NULL;
+    task->output_buff_size = NULL;
+#else
     task->output_buff = gGfxSPTaskOutputBuffer;
     task->output_buff_size = (u64*)((u8*)gGfxSPTaskOutputBuffer + sizeof(gGfxSPTaskOutputBuffer));
+#endif
     task->data_ptr = (u64*)gfxCtx->workBuffer;
 
     OPEN_DISPS(gfxCtx);
@@ -281,6 +287,7 @@ void Graph_Update(GraphicsContext* gfxCtx, GameState* gameState) {
         return;
     }
 
+    SOH3DS_GAME_PROFILE_SCOPE(profile, SOH3DS_GAME_UPDATE);
     gameState->unk_A0 = 0;
     Graph_InitTHGA(gfxCtx);
 

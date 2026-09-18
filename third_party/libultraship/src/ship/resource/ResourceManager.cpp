@@ -6,6 +6,7 @@
 #include <thread>
 #include "ship/utils/StringHelper.h"
 #include "ship/utils/Utils.h"
+#include "ship/utils/glob.h"
 #include "ship/config/ConsoleVariable.h"
 #include "ship/Context.h"
 
@@ -36,15 +37,42 @@ bool ResourceIdentifier::operator==(const ResourceIdentifier& rhs) const {
 }
 
 size_t ResourceIdentifier::CalculateHash() {
-    size_t hash = Math::HashCombine(std::hash<std::string>{}(Path), std::hash<std::uintptr_t>{}(Owner));
+    // Hash through std::string_view, not std::string: the transparent probe
+    // below looks the cache up from a view, and using one specialization for
+    // both makes the two hashes equal by construction instead of relying on
+    // libstdc++ routing hash<string> and hash<string_view> to the same bytes.
+    // mHash is never persisted, so changing it is invisible outside a run.
+    size_t hash = Math::HashCombine(std::hash<std::string_view>{}(Path), std::hash<std::uintptr_t>{}(Owner));
     if (Parent != nullptr) {
-        hash = Math::HashCombine(hash, std::hash<std::string>{}(Parent->GetPath()));
+        hash = Math::HashCombine(hash, std::hash<std::string_view>{}(Parent->GetPath()));
     }
     return hash;
 }
 
 size_t ResourceIdentifierHash::operator()(const ResourceIdentifier& rcd) const {
     return rcd.GetHash();
+}
+
+size_t ResourceIdentifierHash::operator()(const ResourceIdentifierProbe& probe) const {
+    // Must reproduce CalculateHash exactly, or a probe cannot find a stored key.
+    size_t hash = Math::HashCombine(std::hash<std::string_view>{}(probe.Path), std::hash<std::uintptr_t>{}(probe.Owner));
+    if (probe.Parent != nullptr) {
+        hash = Math::HashCombine(hash, std::hash<std::string_view>{}(probe.Parent->GetPath()));
+    }
+    return hash;
+}
+
+bool ResourceIdentifierEqual::operator()(const ResourceIdentifier& lhs, const ResourceIdentifier& rhs) const {
+    return lhs == rhs;
+}
+
+bool ResourceIdentifierEqual::operator()(const ResourceIdentifier& lhs, const ResourceIdentifierProbe& rhs) const {
+    // shared_ptr::operator== compares the stored pointer, so raw-vs-shared is the same test.
+    return lhs.Owner == rhs.Owner && lhs.Parent.get() == rhs.Parent && lhs.Path == rhs.Path;
+}
+
+bool ResourceIdentifierEqual::operator()(const ResourceIdentifierProbe& lhs, const ResourceIdentifier& rhs) const {
+    return (*this)(rhs, lhs);
 }
 
 ResourceManager::ResourceManager() {
@@ -158,7 +186,7 @@ std::shared_ptr<IResource> ResourceManager::LoadResourceProcess(const ResourceId
     // throw-tracer caught a bad_alloc in O2rArchive's buffer allocation at
     // the heap ceiling). One catch at this boundary covers every archive
     // source - including the ".meta" string concat below, which also
-    // allocates. Allocation-free handler; failure is cached like NotFound.
+    // allocates. Allocation-free handler; transient failures remain retryable.
     std::shared_ptr<File> file = nullptr;
     bool missingWithoutMeta = false;
     try {
@@ -213,7 +241,13 @@ std::shared_ptr<IResource> ResourceManager::LoadResourceProcess(const ResourceId
         if (resource != nullptr) {
             mResourceCache[identifier] = resource;
         } else {
+#ifndef __3DS__
             mResourceCache[identifier] = ResourceLoadError::NotFound;
+#endif
+            // On 3DS, an existing file can fail to import at the heap ceiling,
+            // including a soundfont whose sample dependency could not load.
+            // Do not permanently reject that path (particularly alt assets).
+            // Truly missing files already receive NotFound above.
         }
     }
 
@@ -293,9 +327,9 @@ std::shared_ptr<IResource> ResourceManager::LoadResource(const ResourceIdentifie
     return resource;
 }
 
-std::shared_ptr<IResource> ResourceManager::LoadResource(const std::string& filePath, bool loadExact,
+std::shared_ptr<IResource> ResourceManager::LoadResource(std::string filePath, bool loadExact,
                                                          std::shared_ptr<ResourceInitData> initData) {
-    return LoadResource({ filePath, mDefaultCacheOwner, mDefaultCacheArchive }, loadExact, initData);
+    return LoadResource({ std::move(filePath), mDefaultCacheOwner, mDefaultCacheArchive }, loadExact, initData);
 }
 
 std::shared_ptr<IResource> ResourceManager::LoadResource(uint64_t crc, bool loadExact,
@@ -342,9 +376,27 @@ std::shared_ptr<IResource> ResourceManager::GetCachedResource(const ResourceIden
     return GetCachedResource(CheckCache(identifier, loadExact));
 }
 
-std::shared_ptr<IResource> ResourceManager::GetCachedResource(const std::string& filePath, bool loadExact) {
-    // Gets the cached resource based on filePath.
-    return GetCachedResource({ filePath, mDefaultCacheOwner, mDefaultCacheArchive }, loadExact);
+std::shared_ptr<IResource> ResourceManager::GetCachedResource(std::string_view filePath, bool loadExact) {
+    // LoadResource strips the signature prefix before it ever touches the cache, so keys are
+    // stored without it - probe the same way or every prefixed path silently misses. This has
+    // to happen BEFORE the alt-asset branch below, in the same order LoadResource does it
+    // (strip, then alt-resolve): forwarding a still-prefixed path to the owning route made
+    // that route miss unconditionally whenever alt assets were enabled.
+    if (filePath.starts_with("__OTR__")) {
+        filePath.remove_prefix(7);
+    }
+    if (filePath.starts_with(IResource::gAltAssetPrefix) || (!loadExact && mAltAssetsEnabled)) {
+        // Alt-asset resolution rewrites the path, which needs storage; take the owning route.
+        return GetCachedResource(
+            ResourceIdentifier{ std::string(filePath), mDefaultCacheOwner, mDefaultCacheArchive }, loadExact);
+    }
+    const std::lock_guard<std::mutex> lock(mMutex);
+    const auto cacheFind =
+        mResourceCache.find(ResourceIdentifierProbe{ filePath, mDefaultCacheOwner, mDefaultCacheArchive.get() });
+    if (cacheFind == mResourceCache.end()) {
+        return nullptr;
+    }
+    return GetCachedResource(cacheFind->second);
 }
 
 std::shared_ptr<IResource>
@@ -447,6 +499,39 @@ void ResourceManager::UnloadResources(const ResourceFilter& filter) {
 }
 
 void ResourceManager::UnloadResourcesProcess(const ResourceFilter& filter) {
+#ifdef __3DS__
+    // Cleanup must not build an archive-wide filename snapshot before it can
+    // free memory. Only cached entries can be unloaded. Preserve the existing
+    // archive-path, default-owner and .meta-alias selection rules.
+    auto archives = GetArchiveManager();
+    const auto matches = [&](const std::string& path) {
+        const bool included = filter.IncludeMasks.empty() ||
+            std::any_of(filter.IncludeMasks.begin(), filter.IncludeMasks.end(),
+                        [&](const auto& mask) { return glob_match(mask.c_str(), path.c_str()); });
+        return included &&
+            std::none_of(filter.ExcludeMasks.begin(), filter.ExcludeMasks.end(),
+                         [&](const auto& mask) { return glob_match(mask.c_str(), path.c_str()); });
+    };
+    std::string metadataPath;
+    for (;;) {
+        decltype(mResourceCache)::node_type removed;
+        {
+            const std::lock_guard<std::mutex> lock(mMutex);
+            auto it = std::find_if(mResourceCache.begin(), mResourceCache.end(), [&](const auto& entry) {
+                const auto& id = entry.first;
+                if (id.Owner != mDefaultCacheOwner || id.Parent != mDefaultCacheArchive) return false;
+                if (matches(id.Path) && archives->HasFile(id.Path)) return true;
+                metadataPath.assign(id.Path);
+                metadataPath += ".meta";
+                return matches(metadataPath) && archives->HasFile(metadataPath);
+            });
+            if (it == mResourceCache.end()) break;
+            removed = mResourceCache.extract(it);
+        }
+        // Destruct outside mMutex; a resource destructor can re-enter the
+        // manager and invalidate iterators. Restart the scan after each erase.
+    }
+#else
     auto list = GetArchiveManager()->ListFiles(filter.IncludeMasks, filter.ExcludeMasks);
 
     for (const auto& key : *list.get()) {
@@ -458,6 +543,7 @@ void ResourceManager::UnloadResourcesProcess(const ResourceFilter& filter) {
             UnloadResource({ key.substr(0, key.size() - 5), mDefaultCacheOwner, mDefaultCacheArchive });
         }
     }
+#endif
 }
 
 std::shared_ptr<ArchiveManager> ResourceManager::GetArchiveManager() {

@@ -6,8 +6,12 @@
 #include <new>
 #include <vector>
 
-// CPU-owned copy of a completed PICA D24S8 buffer. Retaining the packed
-// layout makes capture a memcpy, with conversion only at queried pixels.
+#if defined(__3DS__) && defined(__arm__)
+extern "C" void Soh3dsCopyWordsArm11(void* dst, const void* src, uint32_t words);
+#endif
+
+// CPU-owned copy of the content tiles in a completed PICA D24S8 buffer.
+// Keep Morton order within each tile; omit unqueryable backing padding.
 class DepthSnapshot3DS {
   public:
     bool requested = false;
@@ -27,13 +31,46 @@ class DepthSnapshot3DS {
             contentWidth > (rotate ? height : width) || contentHeight > (rotate ? width : height)) {
             return false;
         }
+        const uint32_t tileColumns = ((rotate ? contentHeight : contentWidth) + 7U) / 8U;
+        const uint32_t firstTileRow = (height - (rotate ? contentWidth : contentHeight)) / 8U;
+        const uint32_t tileRows = height / 8U - firstTileRow;
+        const size_t rowPixels = static_cast<size_t>(tileColumns) * 64U;
+        const size_t pixelCount = rowPixels * tileRows;
         try {
-            pixels.resize(static_cast<size_t>(width) * height);
+            // Reuse stable-size captures without allocating. On growth, avoid
+            // vector's geometric spare capacity on a memory-limited handheld.
+            if (pixelCount > pixels.capacity()) {
+                std::vector<uint32_t>(pixelCount).swap(pixels);
+            } else {
+                pixels.resize(pixelCount);
+            }
         } catch (const std::bad_alloc&) {
             return false;
         }
-        std::memcpy(pixels.data(), source, pixels.size() * sizeof(uint32_t));
-        backingWidth = width;
+        const size_t sourceRowPixels = static_cast<size_t>(width) * 8U;
+        const auto* sourceBytes = static_cast<const unsigned char*>(source) +
+                                  firstTileRow * sourceRowPixels * sizeof(uint32_t);
+        if (rowPixels == sourceRowPixels) {
+#if defined(__3DS__) && defined(__arm__)
+            Soh3dsCopyWordsArm11(pixels.data(), sourceBytes, static_cast<uint32_t>(pixelCount));
+#else
+            std::memcpy(pixels.data(), sourceBytes, pixelCount * sizeof(uint32_t));
+#endif
+        } else {
+            for (uint32_t row = 0; row < tileRows; ++row) {
+#if defined(__3DS__) && defined(__arm__)
+                Soh3dsCopyWordsArm11(pixels.data() + row * rowPixels,
+                                     sourceBytes + row * sourceRowPixels * sizeof(uint32_t),
+                                     static_cast<uint32_t>(rowPixels));
+#else
+                std::memcpy(pixels.data() + row * rowPixels,
+                            sourceBytes + row * sourceRowPixels * sizeof(uint32_t),
+                            rowPixels * sizeof(uint32_t));
+#endif
+            }
+        }
+        capturedTileColumns = tileColumns;
+        capturedFirstTileRow = firstTileRow;
         backingHeight = height;
         drawWidth = contentWidth;
         drawHeight = contentHeight;
@@ -60,13 +97,14 @@ class DepthSnapshot3DS {
             morton |= ((tx >> bit) & 1U) << (2 * bit);
             morton |= ((ty >> bit) & 1U) << (2 * bit + 1);
         }
-        const size_t offset = ((ty / 8U) * (backingWidth / 8U) + tx / 8U) * 64U + morton;
+        const size_t offset = ((ty / 8U - capturedFirstTileRow) * capturedTileColumns + tx / 8U) * 64U + morton;
         // PICA uses reversed depth: zero is far; the upper byte is stencil.
         return static_cast<uint16_t>(((0xFFFFFFU - (pixels[offset] & 0xFFFFFFU)) >> 10U) << 2U);
     }
 
   private:
     std::vector<uint32_t> pixels;
-    uint32_t backingWidth = 0, backingHeight = 0, drawWidth = 0, drawHeight = 0;
+    uint32_t capturedTileColumns = 0, capturedFirstTileRow = 0;
+    uint32_t backingHeight = 0, drawWidth = 0, drawHeight = 0;
     bool valid = false, rotated = false;
 };

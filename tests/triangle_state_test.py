@@ -208,6 +208,10 @@ static void Differential() {
     { Interpreter s; ++s.rdp.texture_tile[0].fmt; ++s.rdp.texture_tile[0].palette;
       ++s.rdp.texture_tile[0].tmem; ++s.rdp.loaded_texture[0].tex_flags;
       Check(s, true, "non-key fields preserve current semantics"); }
+    { Interpreter s; ++s.rdp.prim_color.r; ++s.rdp.env_color.g; ++s.rdp.fog_color.b;
+      ++s.rdp.key_center.a; ++s.rdp.key_scale.a; ++s.rdp.blend_color.a;
+      ++s.rdp.grayscale_color.r;
+      Check(s, true, "live colours do not invalidate a layout"); }
     std::printf("triangle state differential passed: %u checks, %zu-byte key\n", checks, sizeof(TriStateKey));
 }
 static double Time(bool fused, unsigned scenario, uint64_t* result) {

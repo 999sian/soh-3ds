@@ -13,6 +13,10 @@
 #include "ship/resource/File.h"
 #include "ship/resource/Resource.h"
 #include "ship/resource/archive/Archive.h"
+#ifdef __3DS__
+#include "ship/resource/archive/CompactZip.h"
+#include "ship/resource/archive/RoomCache3DS.h"
+#endif
 
 namespace Ship {
 struct File;
@@ -69,6 +73,15 @@ class O2rArchive final : virtual public Archive {
      * @return Loaded File with a populated buffer, or nullptr if not found.
      */
     std::shared_ptr<File> LoadFile(uint64_t hash);
+#ifdef __3DS__
+    const std::string* HashToString(uint64_t hash) const override;
+    size_t PrefetchRoom(const std::string& prefix, size_t budget);
+    uint64_t PrefetchHits() const;
+    bool HasFile(uint64_t hash) override;
+    using Archive::HasFile;
+    std::shared_ptr<std::unordered_map<uint64_t, std::string>> ListFiles() override;
+    std::shared_ptr<std::unordered_map<uint64_t, std::string>> ListFiles(const std::string& filter) override;
+#endif
 
   private:
     /** @brief Acquires a zip_t* handle from the pool, opening a new one if the pool is empty. */
@@ -77,7 +90,17 @@ class O2rArchive final : virtual public Archive {
     void ReleaseZipHandle(zip_t* handle);
 #ifdef __3DS__
     // Serialize complete entry reads and writes on the single ZIP handle.
-    std::mutex mReadMutex;
+    mutable std::mutex mReadMutex;
+    RoomCache3DS mRoomCache;
+    const Soh3dsCompactZipApi* mCompactApi = nullptr;
+    void* mCompactHandle = nullptr;
+    // The ZIP already owns the filenames. Keep only hash/index pairs eagerly;
+    // materialize stable strings when clients actually resolve a path.
+    bool mUsesCompactIndex = false;
+    std::vector<std::pair<uint64_t, size_t>> mCompactIndex;
+    mutable std::unordered_map<uint64_t, std::string> mResolvedPaths;
+    void BuildCompactIndex(); // caller holds mReadMutex
+    std::string IndexedName(size_t index) const; // caller holds mReadMutex
 #endif
     zip_t* mZipArchive;
     std::mutex mPoolMutex;

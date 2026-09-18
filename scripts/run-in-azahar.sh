@@ -14,7 +14,15 @@ set -euo pipefail
 
 ROM="${1:?usage: run-in-azahar.sh <file.3dsx> [seconds]}"
 SECS="${2:-20}"
-AZAHAR="${AZAHAR:-/tmp/azahar.AppImage}"
+if [ -z "${AZAHAR:-}" ]; then
+    if [ -x "/tmp/azahar.AppImage" ]; then
+        AZAHAR="/tmp/azahar.AppImage"
+    elif [ -x "$HOME/azahar/azahar.AppImage" ]; then
+        AZAHAR="$HOME/azahar/azahar.AppImage"
+    else
+        AZAHAR="/tmp/azahar.AppImage"
+    fi
+fi
 CONFIG="$HOME/.config/azahar-emu/qt-config.ini"
 LOG="$HOME/.local/share/azahar-emu/log/azahar_log.txt"
 

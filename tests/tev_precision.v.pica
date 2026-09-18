@@ -1,0 +1,9 @@
+.in position_in v0
+.in color_in v1
+.out position_out position
+.out color_out color
+.proc main
+    mov position_out, position_in
+    mov color_out, color_in
+    end
+.end

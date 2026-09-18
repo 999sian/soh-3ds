@@ -3,6 +3,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <string>
+#include <string_view>
 #include <list>
 #include <vector>
 #include <mutex>
@@ -69,10 +70,39 @@ struct ResourceIdentifier {
 };
 
 /**
+ * @brief Borrowed view of an identifier, for looking the cache up without owning a path.
+ *
+ * A ResourceIdentifier owns a std::string, so building one just to probe the cache costs an
+ * allocation - and SoH's by-name lookups probe hundreds of times per frame while nearly always
+ * hitting. This carries the same three fields by reference so a hit allocates nothing.
+ */
+struct ResourceIdentifierProbe {
+    std::string_view Path;
+    uintptr_t Owner;
+    /** @brief Raw parent archive; compares equal to a shared_ptr holding the same object. */
+    Archive* Parent;
+};
+
+/**
  * @brief std::hash specialization for ResourceIdentifier, used by unordered containers.
+ *
+ * Transparent: also hashes a ResourceIdentifierProbe to the identical value, which is what
+ * makes heterogeneous lookup on the resource cache possible.
  */
 struct ResourceIdentifierHash {
+    using is_transparent = void;
     size_t operator()(const ResourceIdentifier& rcd) const;
+    size_t operator()(const ResourceIdentifierProbe& probe) const;
+};
+
+/**
+ * @brief Key equality for the resource cache, transparent over ResourceIdentifierProbe.
+ */
+struct ResourceIdentifierEqual {
+    using is_transparent = void;
+    bool operator()(const ResourceIdentifier& lhs, const ResourceIdentifier& rhs) const;
+    bool operator()(const ResourceIdentifier& lhs, const ResourceIdentifierProbe& rhs) const;
+    bool operator()(const ResourceIdentifierProbe& lhs, const ResourceIdentifier& rhs) const;
 };
 
 /**
@@ -118,11 +148,16 @@ class ResourceManager {
 
     /**
      * @brief Returns a resource from the cache if present, without loading from disk.
+     *
+     * Takes a view and probes the cache heterogeneously, so a hit allocates nothing. Strips the
+     * `__OTR__` signature prefix the same way LoadResource does, since cache keys are stored
+     * without it. Falls back to an owning lookup only when alt assets are enabled.
+     *
      * @param filePath  Virtual path of the resource.
      * @param loadExact If true, skips alt-asset path resolution and uses the exact path.
      * @return Cached IResource, or nullptr if not found in the cache.
      */
-    std::shared_ptr<IResource> GetCachedResource(const std::string& filePath, bool loadExact = false);
+    std::shared_ptr<IResource> GetCachedResource(std::string_view filePath, bool loadExact = false);
 
     /**
      * @brief Returns a resource from the cache using a ResourceIdentifier.
@@ -134,12 +169,15 @@ class ResourceManager {
 
     /**
      * @brief Loads a resource synchronously, returning it from the cache if already loaded.
-     * @param filePath  Virtual path of the resource.
+     * @param filePath  Virtual path of the resource. Taken by value and moved into the
+     *                  ResourceIdentifier: the identifier owns a std::string copy either way,
+     *                  so a caller with a temporary (SoH's by-name lookups build one per call,
+     *                  hundreds of times per frame) pays one allocation instead of two.
      * @param loadExact If true, skips alt-asset path resolution.
      * @param initData  Optional metadata overrides; pass nullptr to use defaults from the file header.
      * @return Loaded (or cached) IResource, or nullptr on failure.
      */
-    std::shared_ptr<IResource> LoadResource(const std::string& filePath, bool loadExact = false,
+    std::shared_ptr<IResource> LoadResource(std::string filePath, bool loadExact = false,
                                             std::shared_ptr<ResourceInitData> initData = nullptr);
 
     /**
@@ -443,7 +481,7 @@ class ResourceManager {
 
   private:
     std::unordered_map<ResourceIdentifier, std::variant<ResourceLoadError, std::shared_ptr<IResource>>,
-                       ResourceIdentifierHash>
+                       ResourceIdentifierHash, ResourceIdentifierEqual>
         mResourceCache;
     std::shared_ptr<ResourceLoader> mResourceLoader;
     std::shared_ptr<ArchiveManager> mArchiveManager;

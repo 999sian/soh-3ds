@@ -1,3 +1,4 @@
+#include "soh/frame_interpolation.h"
 #include <sstream>
 
 #include "ship/utils/StringHelper.h"
@@ -241,8 +242,6 @@ Kaleido::Kaleido() {
 }
 
 extern "C" {
-void FrameInterpolation_RecordCloseChild(void);
-void FrameInterpolation_RecordOpenChild(const void* a, int b);
 }
 
 void Kaleido::Draw(PlayState* play) {

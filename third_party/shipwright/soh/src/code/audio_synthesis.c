@@ -1,6 +1,12 @@
 #include <libultraship/libultra.h>
 #include "global.h"
 #include "soh/mixer.h"
+#ifdef SOH3DS_DSP_CAPTURE
+#include "dsp_mixer_hooks.h"
+#endif
+#ifdef SOH3DS_AUDIO_PROFILE
+#include "ship/utils/audio_profile_3ds.h"
+#endif
 
 #define DEFAULT_LEN_1CH 0x1A0
 #define DEFAULT_LEN_2CH 0x340
@@ -144,6 +150,9 @@ Acmd* AudioSynth_Update(Acmd* cmdStart, s32* cmdCnt, s16* aiStart, s32 aiBufLen)
         AudioSeq_ProcessSequences(i - 1);
         func_800DB03C(gAudioContext.audioBufferParameters.updatesPerFrame - i);
     }
+#ifdef SOH3DS_AUDIO_PROFILE
+    Soh3dsAudioProfileMark(SOH3DS_AUDIO_SEQUENCE);
+#endif
 
     aiBufP = aiStart;
     gAudioContext.curLoadedBook = NULL;
@@ -178,6 +187,9 @@ Acmd* AudioSynth_Update(Acmd* cmdStart, s32* cmdCnt, s16* aiStart, s32 aiBufLen)
     }
 
     *cmdCnt = cmdP - cmdStart;
+#ifdef SOH3DS_AUDIO_PROFILE
+    Soh3dsAudioProfileMark(SOH3DS_AUDIO_MIXING);
+#endif
     return cmdP;
 }
 
@@ -562,6 +574,10 @@ Acmd* AudioSynth_DoOneAudioUpdate(s16* aiBuf, s32 aiBufLen, Acmd* cmd, s32 updat
     NoteSubEu* noteSubEu2;
     s32 unk14;
 
+#ifdef SOH3DS_DSP_CAPTURE
+    SohDspMixerBeginChunk();
+#endif
+
     // if (aiBufLen == 0)
     // return;
 
@@ -660,6 +676,10 @@ Acmd* AudioSynth_DoOneAudioUpdate(s16* aiBuf, s32 aiBufLen, Acmd* cmd, s32 updat
         aInterleave(cmd++, DMEM_TEMP, DMEM_LEFT_CH, DMEM_RIGHT_CH, updateIndex);
     }
     aSaveBuffer(cmd++, DMEM_TEMP, aiBuf, updateIndex * 2);
+
+#ifdef SOH3DS_DSP_CAPTURE
+    SohDspMixerEndChunk();
+#endif
 
     return cmd;
 }

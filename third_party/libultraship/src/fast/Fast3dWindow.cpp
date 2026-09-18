@@ -216,6 +216,14 @@ bool Fast3dWindow::IsFrameReady() {
 }
 
 bool Fast3dWindow::DrawAndRunGraphicsCommands(Gfx* commands, const std::unordered_map<Mtx*, MtxF>& mtxReplacements) {
+    return DrawAndRunGraphicsCommandsInternal(commands, &mtxReplacements);
+}
+
+bool Fast3dWindow::DrawAndRunGraphicsCommands(Gfx* commands) {
+    return DrawAndRunGraphicsCommandsInternal(commands, nullptr);
+}
+
+bool Fast3dWindow::DrawAndRunGraphicsCommandsInternal(Gfx* commands, const std::unordered_map<Mtx*, MtxF>* mtxReplacements) {
     std::shared_ptr<Window> wnd = Ship::Context::GetRawInstance()->GetWindow();
 
     // Skip dropped frames
@@ -230,19 +238,17 @@ bool Fast3dWindow::DrawAndRunGraphicsCommands(Gfx* commands, const std::unordere
     gui->StartDraw();
     // Setup game framebuffers to match available window space
     mInterpreter->StartFrame();
-    // Execute the games gfx commands
+    // Execute the game commands; both frame paths share GUI and cleanup.
 #ifdef __3DS__
-    // SoH-3DS: the citro3d backend throws (bad_alloc on texture-init failure,
-    // length_error on vertex-buffer exhaustion). Losing one frame's draws is
-    // strictly better than std::terminate mid-game; the backend's own state
-    // stays consistent because EndFrame still runs below.
+    // Keep cleanup below even when the renderer drops a frame on allocation failure.
     try {
-        mInterpreter->Run(commands, mtxReplacements);
+#endif
+        if (mtxReplacements) mInterpreter->Run(commands, *mtxReplacements);
+        else mInterpreter->Run(commands);
+#ifdef __3DS__
     } catch (const std::exception& e) {
         std::fprintf(stderr, "gfx: frame dropped: %s\n", e.what());
     }
-#else
-    mInterpreter->Run(commands, mtxReplacements);
 #endif
     // Renders the game frame buffer to the final window and finishes the GUI
     gui->EndDraw();

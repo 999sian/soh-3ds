@@ -27,9 +27,24 @@ target_compile_options(pica_combiner PRIVATE -Wall -Wextra)
 # runs under Azahar and on hardware. Currently: osSetSpeedupEnable, which goes
 # through ptm:sysm ConfigureNew3DSCPU and never returns under Azahar.
 option(SOH3DS_EMULATOR_SAFE "Skip emulator-unimplemented service calls" OFF)
+option(SOH3DS_DSP_CAPTURE "Build experimental DSP mixer capture hooks; requires runtime backend" OFF)
+option(SOH3DS_AUDIO_PROFILE "Build sampled audio-stage diagnostics (requires Logging)" OFF)
+option(SOH3DS_OLD_AUDIO_CORE0 "Experiment: prioritize Old 3DS synthesis on core 0" OFF)
+option(SOH3DS_ARM11_FILTER_ASM "Experiment: exact ARM11 eight-tap audio filter" OFF)
+option(SOH3DS_ARM11_MATRIX_MULT "Experiment: ARM11 4x4 game matrix multiplication" OFF)
+option(SOH3DS_COMPACT_VERTEX_STREAM "Experiment: compact byte-colour vertex batches" OFF)
+# Link-wraps GPUCMD_Add to specialize one-parameter register writes, which are
+# the common case in Citro3D (C3D_DrawArrays has 11 call sites and
+# C3Di_UpdateContext 16). Validated against the pinned libctru reference by
+# tests/gpu_command_test.py (13,824 generated cases, exact words/offsets/panic
+# behaviour); all other lengths delegate to the SDK. Previously reachable only
+# through the throwaway soh_3ds_gpucmd target, so it was never measured on
+# hardware; Azahar showed renderer submission 14.833 -> 14.467 ms/frame.
+option(SOH3DS_FAST_GPUCMD "Specialize single-parameter Citro3D GPU command writes" OFF)
 
 set(N3DS_BUILD ON CACHE BOOL "building for 3DS" FORCE)
 if(N3DS)
+    enable_language(ASM)
     # --- Phase 0 link smoke test ---------------------------------------------
     #
     # Proves libctru + citro3d + the from-source SDL2 all link into one 3DS
@@ -71,6 +86,20 @@ if(N3DS)
         COMMENT "3dsxtool -> smoke_3ds.3dsx")
 
     set(LUS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/libultraship")
+    # ROM-free byte precision probe; measures real TEV outputs in RGBA8.
+    set(TEV_PROBE_C "${CMAKE_CURRENT_BINARY_DIR}/tev_precision_shbin.c")
+    add_custom_command(OUTPUT "${TEV_PROBE_C}"
+        COMMAND "${DEVKITPRO}/tools/bin/picasso" -o "${CMAKE_CURRENT_BINARY_DIR}/tev_precision.shbin"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/tev_precision.v.pica"
+        COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/scripts/bin2c.py"
+                "${CMAKE_CURRENT_BINARY_DIR}/tev_precision.shbin" "${TEV_PROBE_C}" tev_precision_shbin
+        DEPENDS tests/tev_precision.v.pica scripts/bin2c.py)
+    add_executable(tev_precision_3ds tests/tev_precision_3ds.cpp "${TEV_PROBE_C}")
+    target_link_libraries(tev_precision_3ds PRIVATE ${LIB_CITRO3D} ${LIB_CTRU} m)
+    target_compile_options(tev_precision_3ds PRIVATE -Wall -Wextra)
+    add_custom_command(TARGET tev_precision_3ds POST_BUILD
+        COMMAND "${DEVKITPRO}/tools/bin/3dsxtool" $<TARGET_FILE:tev_precision_3ds>
+                $<TARGET_FILE:tev_precision_3ds>.3dsx)
     set(LUS_BUILD "${LUS_DIR}/build-3ds")
 
     # --- PICA vertex shader ---------------------------------------------------
@@ -241,6 +270,23 @@ else()
     enable_testing()
     add_test(NAME combiner_lowering COMMAND test_combiner)
     find_package(Python3 REQUIRED COMPONENTS Interpreter)
+    # ISA/ABI regressions are optional on hosts without the 3DS toolchain.
+    find_program(SOH3DS_TEST_ARM_GCC arm-none-eabi-gcc HINTS
+        "$ENV{DEVKITPRO}/devkitARM/bin" "$ENV{HOME}/dkp-root/opt/devkitpro/devkitARM/bin"
+        "/opt/devkitpro/devkitARM/bin" NO_DEFAULT_PATH)
+    find_program(SOH3DS_TEST_QEMU_ARM qemu-arm)
+    if(SOH3DS_TEST_ARM_GCC AND SOH3DS_TEST_QEMU_ARM)
+        get_filename_component(SOH3DS_TEST_ARM_BIN "${SOH3DS_TEST_ARM_GCC}" DIRECTORY)
+        get_filename_component(SOH3DS_TEST_DKP "${SOH3DS_TEST_ARM_BIN}/../.." ABSOLUTE)
+        if(EXISTS "${SOH3DS_TEST_DKP}/devkitARM/bin/arm-none-eabi-gcc" AND
+           EXISTS "${SOH3DS_TEST_DKP}/devkitARM/bin/arm-none-eabi-g++")
+            foreach(arm11_test arm11_vertex arm11_vertex_integration arm11_vertex_hardware_mode arm11_matrix_mult triangle_emit_arm11)
+                add_test(NAME ${arm11_test} COMMAND ${CMAKE_COMMAND} -E env
+                    "DEVKITPRO=${SOH3DS_TEST_DKP}" ${Python3_EXECUTABLE}
+                    ${CMAKE_CURRENT_SOURCE_DIR}/tests/${arm11_test}_test.py)
+            endforeach()
+        endif()
+    endif()
     add_test(NAME setup_packaging COMMAND ${Python3_EXECUTABLE}
         ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_setup_packaging.py)
     add_test(NAME setup_bundle COMMAND ${Python3_EXECUTABLE}
@@ -252,15 +298,31 @@ else()
     add_executable(test_interpolation_recording tests/interpolation_recording_test.cpp)
     target_include_directories(test_interpolation_recording PRIVATE tests/interpolation_stubs)
     add_test(NAME interpolation_retention COMMAND test_interpolation_recording)
+    add_test(NAME no_frame_interpolation_3ds COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tests/no_frame_interpolation_3ds_test.py)
+    add_test(NAME no_interpolation_render COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tests/no_interpolation_render_test.py)
     add_test(NAME frame_pacing COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/frame_pacing_test.py)
     add_test(NAME cvar_string COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/cvar_string_test.py)
     add_test(NAME cvar_concurrency COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/cvar_concurrency_test.py)
+    add_test(NAME compact_vertex_stream COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/compact_vertex_stream_test.py)
+    if(SOH3DS_TEST_ARM_GCC AND SOH3DS_TEST_QEMU_ARM)
+        add_test(NAME compact_vertex_stream_arm COMMAND ${CMAKE_COMMAND} -E env
+            "DEVKITPRO=${SOH3DS_TEST_DKP}" ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/compact_vertex_stream_test.py --arm)
+    endif()
+    add_test(NAME compact_stream_build COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/compact_stream_build_test.py)
+    add_test(NAME game_profile_3ds COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/game_profile_3ds_test.py)
+    add_test(NAME profile_disabled_calls_3ds COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/profile_disabled_calls_3ds_test.py)
     add_test(NAME renderer_profile COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/renderer_profile_test.py)
     add_test(NAME frame_trace COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/frame_trace_test.py)
     add_test(NAME heartbeat_capture COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/heartbeat_capture_test.py)
     add_test(NAME debug_logging COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/debug_logging_test.py)
     add_test(NAME combiner_key COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/combiner_key_test.py)
     add_test(NAME triangle_pair COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/triangle_pair_test.py)
+    add_test(NAME triangle_run COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/triangle_run_test.py)
+    add_test(NAME triangle_run_build COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/triangle_run_build_test.py)
+    add_test(NAME triangle_emit_build COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/triangle_emit_build_test.py)
+    add_test(NAME resource_path_resolution COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/resource_path_resolution_test.py)
     add_test(NAME packed_vertex COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/packed_vertex_test.py)
     add_test(NAME gpu_command COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/gpu_command_test.py)
     add_test(NAME save_transactions COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/save_transaction_test.sh)
@@ -280,16 +342,35 @@ else()
     add_test(NAME randomizer_settings_3ds COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/randomizer_settings_3ds_test.py)
     add_test(NAME randomizer_reachability_filter COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/randomizer_reachability_filter_test.py)
     add_test(NAME settings_font COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/settings_font_test.py)
+    add_test(NAME model_profile_3ds COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/model_profile_3ds_test.py)
+    add_test(NAME logging_memory_3ds COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/logging_memory_3ds_test.py)
+    add_test(NAME archive_listing COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/archive_listing_test.py)
+    add_test(NAME tracker_memory_3ds COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/tracker_memory_3ds_test.py)
+    add_test(NAME gameplay_stats_memory COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/gameplay_stats_memory_test.py)
+    add_test(NAME settings_memory_3ds COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/settings_memory_3ds_test.py)
+    add_test(NAME old_cpu_limit_3ds COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/old_cpu_limit_3ds_test.py)
+    add_test(NAME audio_font_metadata_3ds COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/audio_font_metadata_3ds_test.py)
+    add_test(NAME jpeg_background COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/jpeg_background_test.py)
+    add_test(NAME compact_zip COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/compact_zip_test.py)
+    add_test(NAME cache_clean_3ds COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/cache_clean_3ds_test.py)
+    add_test(NAME combiner_plan_3ds COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/combiner_plan_3ds_test.py)
+    add_test(NAME combiner_precision_3ds COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/combiner_precision_3ds_test.py)
+    add_test(NAME texture_rows_3ds COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/texture_rows_3ds_test.py)
+    add_test(NAME room_prefetch_policy COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/room_prefetch_policy_test.py)
+    add_test(NAME compact_archive_memory COMMAND ${CMAKE_COMMAND} -E env SOH_TEST_COMPACT=1
+        ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/archive_memory_3ds_test.py)
     add_test(NAME quick_items_3ds COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/quick_items_3ds_test.py)
     add_test(NAME controls_3ds COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/controls_3ds_test.py)
     add_test(NAME tracker_3ds COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/tracker_3ds_test.py)
     add_test(NAME randomizer_menu_3ds COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/randomizer_menu_3ds_test.py)
     add_test(NAME glow_depth COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/glow_depth_test.py)
+    add_test(NAME depth_snapshot COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/depth_snapshot_test.py)
     foreach(regression sampler depth timing)
         add_test(NAME renderer_${regression} COMMAND ${Python3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/tests/renderer_regression.py ${regression})
     endforeach()
     add_test(NAME audio_safety COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/audio_safety_test.py)
+    add_test(NAME audio_stage_profile_3ds COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/audio_stage_profile_3ds_test.py)
     add_test(NAME sleep_3ds COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/sleep_3ds_test.py)
 endif()
 
@@ -325,7 +406,15 @@ if(N3DS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/shipwright/soh/src")
     message(STATUS "soh decomp: ${SOH_DECOMP_COUNT} translation units")
 
     add_library(soh_decomp STATIC ${SOH_DECOMP_SOURCES})
+    target_sources(soh_decomp PRIVATE src/compat3ds/arm11/matrix_copy.S src/compat3ds/arm11/matrix_vec.S)
+    if(SOH3DS_ARM11_MATRIX_MULT)
+        target_sources(soh_decomp PRIVATE src/compat3ds/arm11/skin_matrix_mult.S
+            src/compat3ds/arm11/matrix_translate.S src/compat3ds/arm11/matrix_trz.S src/compat3ds/arm11/matrix_rot.S)
+        set_property(SOURCE "${SOH_DIR}/src/code/z_skin_matrix.c" "${SOH_DIR}/src/code/sys_matrix.c"
+            APPEND PROPERTY COMPILE_DEFINITIONS SOH3DS_ARM11_MATRIX_MULT=1)
+    endif()
     target_include_directories(soh_decomp PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/src"
         "${SOH_DIR}/include" "${SOH_DIR}" "${SOH_DIR}/src" "${SOH_DIR}/assets"
         "${LUS_DIR}/include" "${LUS_DIR}/src"
         "${DEVKITPRO}/libctru/include" "${PORTLIBS}/include")
@@ -397,6 +486,13 @@ if(N3DS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/shipwright/soh/src")
     message(STATUS "soh enhancement layer: ${SOH_ENH_COUNT} translation units")
 
     add_library(soh_enhancement STATIC ${SOH_ENH_SOURCES})
+    target_sources(soh_enhancement PRIVATE src/compat3ds/arm11/resample.S src/compat3ds/arm11/audio_mix.S
+        src/compat3ds/arm11/matrix_f2l.S)
+    if(SOH3DS_ARM11_FILTER_ASM)
+        target_sources(soh_enhancement PRIVATE src/compat3ds/arm11/audio_filter.S)
+        set_property(SOURCE "${SOH_DIR}/soh/mixer.c"
+            APPEND PROPERTY COMPILE_DEFINITIONS SOH3DS_ARM11_FILTER_ASM)
+    endif()
     target_include_directories(soh_enhancement PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}/src"
         "${SOH_DIR}/include" "${SOH_DIR}" "${SOH_DIR}/src" "${SOH_DIR}/assets"
@@ -418,6 +514,9 @@ if(N3DS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/shipwright/soh/src")
     target_compile_definitions(soh_enhancement PRIVATE
         F3DEX_GBI_2 NDEBUG INCLUDE_GAME_PRINTF LOG_LEVEL_GAME_PRINTS=6)
     target_compile_options(soh_enhancement PRIVATE -w -fpermissive -Os)
+    # Audio must keep up with the DSP on Old's limited syscore share. Override
+    # the size-oriented default only for the per-sample software mixer.
+    set_source_files_properties("${SOH_DIR}/soh/mixer.c" PROPERTIES COMPILE_OPTIONS "-O2")
     # Generation spends most of its time evaluating reachability and inventory.
     # Optimize these small hot files for speed; retain -Os for the wider port.
     foreach(_rando_hot 3drando/fill logic location_access)
@@ -441,6 +540,27 @@ if(N3DS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/shipwright/soh/src")
         src/compat3ds/sleep_3ds.cpp
         src/compat3ds/excluded_stubs.cpp
         src/compat3ds/network_stubs.cpp)
+    if(SOH3DS_OLD_AUDIO_CORE0)
+        set_property(SOURCE "${SOH_DIR}/soh/OTRGlobals.cpp"
+            APPEND PROPERTY COMPILE_DEFINITIONS SOH3DS_OLD_AUDIO_CORE0)
+    endif()
+    if(SOH3DS_DSP_CAPTURE)
+        include(cmake/DspLifecycle3DS.cmake)
+        soh3ds_attach_dsp_lifecycle(soh_3ds)
+        soh3ds_attach_dsp_runtime(soh_3ds)
+        set_property(SOURCE "${SOH_DIR}/soh/mixer.c" "${SOH_DIR}/src/code/audio_synthesis.c" "${SOH_DIR}/soh/OTRGlobals.cpp"
+            APPEND PROPERTY COMPILE_DEFINITIONS SOH3DS_DSP_CAPTURE)
+        set_property(SOURCE "${SOH_DIR}/soh/mixer.c" "${SOH_DIR}/src/code/audio_synthesis.c" "${SOH_DIR}/soh/OTRGlobals.cpp"
+            APPEND PROPERTY INCLUDE_DIRECTORIES "${CMAKE_SOURCE_DIR}/research/dsp/synth-probe")
+    endif()
+    if(SOH3DS_AUDIO_PROFILE)
+        target_sources(soh_3ds PRIVATE src/compat3ds/audio_profile_3ds.cpp)
+        set_property(SOURCE
+            "${SOH_DIR}/soh/OTRGlobals.cpp" "${SOH_DIR}/soh/mixer.c"
+            "${SOH_DIR}/src/code/code_800E4FE0.c" "${SOH_DIR}/src/code/audio_synthesis.c"
+            src/compat3ds/audio_profile_3ds.cpp
+            APPEND PROPERTY COMPILE_DEFINITIONS SOH3DS_AUDIO_PROFILE)
+    endif()
     soh3ds_attach_pc_free_setup(soh_3ds)
     target_include_directories(soh_3ds PRIVATE
         src tests src/compat3ds
@@ -477,15 +597,24 @@ if(N3DS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/shipwright/soh/src")
     # (std::filesystem + nlohmann; reproducible data abort at a prologue push).
     # Wrap the one choke point every pthread/std::thread/BS::thread_pool routes
     # through and raise the floor; wrapper in tests/soh_3ds_main.cpp.
-    target_link_options(soh_3ds PRIVATE -Wl,--wrap=__syscall_thread_create -Wl,--wrap=threadCreate)
+    target_link_options(soh_3ds PRIVATE -Wl,--wrap=__syscall_thread_create -Wl,--wrap=threadCreate
+        -Wl,--wrap=malloc)
+    if(SOH3DS_FAST_GPUCMD)
+        target_sources(soh_3ds PRIVATE platform/3ds/source/gpu_command_fast_3ds.c)
+        target_link_options(soh_3ds PRIVATE -Wl,--wrap=GPUCMD_Add)
+    endif()
     set_target_properties(soh_3ds PROPERTIES CXX_STANDARD 20 EXCLUDE_FROM_ALL TRUE)
     soh3ds_add_pc_free_artifacts(soh_3ds)
+    include(cmake/Old3DS.cmake)
 
     # Isolate the command-writer experiment, sharing the exact baseline game
     # libraries and SDK. Build explicitly with --target soh_3ds_gpucmd.
     get_target_property(SOH_MAIN_SOURCES soh_3ds SOURCES)
     add_executable(soh_3ds_gpucmd ${SOH_MAIN_SOURCES}
         platform/3ds/source/gpu_command_fast_3ds.c)
+    if(SOH3DS_DSP_CAPTURE)
+        add_dependencies(soh_3ds_gpucmd soh_3ds_dsp_firmware)
+    endif()
     foreach(prop INCLUDE_DIRECTORIES COMPILE_DEFINITIONS COMPILE_OPTIONS LINK_LIBRARIES LINK_OPTIONS)
         get_target_property(SOH_MAIN_PROP soh_3ds ${prop})
         if(SOH_MAIN_PROP)
@@ -523,8 +652,10 @@ if(N3DS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/platform/3ds/source/gfx_citro3d.
 
     add_library(mk_gfx_citro3d STATIC
         platform/3ds/source/gfx_citro3d.cpp
+        platform/3ds/source/system_3ds.cpp
         platform/3ds/source/gfx_window_manager_3ds.cpp
         src/mk_gfx_factory.cpp
+        src/compat3ds/arm11/depth_copy.S
         "${MK_SHBIN_C}")
     target_include_directories(mk_gfx_citro3d PUBLIC src
         platform/3ds/include
@@ -535,10 +666,19 @@ if(N3DS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/platform/3ds/source/gfx_citro3d.
         "${LUS_BUILD}/_deps/nlohmann_json-src/include"
         "${LUS_BUILD}/_deps/stb"
         "${DEVKITPRO}/libctru/include" "${PORTLIBS}/include" "${PORTLIBS}/include/SDL2")
+    if(SOH3DS_COMPACT_VERTEX_STREAM)
+        target_compile_definitions(mk_gfx_citro3d PRIVATE SOH3DS_COMPACT_VERTEX_STREAM=1)
+    endif()
     target_compile_options(mk_gfx_citro3d PRIVATE
         -O3 -fomit-frame-pointer -fno-strict-aliasing -w)
     # C++20, not 17: the SoH-3DS window backend includes fast/Fast3dGui.h to
     # bring up ImGui, and that pulls in fast/interpreter.h, which uses C++20
     # defaulted operator== and the spaceship operator. soh_3ds is C++20 too.
     set_target_properties(mk_gfx_citro3d PROPERTIES CXX_STANDARD 20 EXCLUDE_FROM_ALL TRUE)
+    add_executable(renderer_precision_3ds tests/renderer_precision_3ds.cpp)
+    target_link_libraries(renderer_precision_3ds PRIVATE mk_gfx_citro3d ${LIB_CITRO3D} ${LIB_CTRU} m)
+    target_compile_options(renderer_precision_3ds PRIVATE -Wall -Wextra)
+    add_custom_command(TARGET renderer_precision_3ds POST_BUILD
+        COMMAND "${DEVKITPRO}/tools/bin/3dsxtool" $<TARGET_FILE:renderer_precision_3ds>
+                $<TARGET_FILE:renderer_precision_3ds>.3dsx)
 endif()

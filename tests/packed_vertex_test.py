@@ -59,6 +59,7 @@ def harness():
 #include <limits>
 #include <random>
 #include <vector>
+#include "compiled_channel_3ds.h"
 ''' + shader + packed_vertex + block(source, 'uint8_t FloatColorToByte(') + '\n' + helpers + original_color + r'''
 using Scales = std::array<float, 2>;
 using Rotations = std::array<bool, 2>;
@@ -305,6 +306,7 @@ def main():
         for enabled in ([1] if args.benchmark else [None, 0, 1]):
             executable = directory / ('test-' + str(enabled))
             flags = ['-std=c++17', '-O2', '-Wall', '-Wextra', '-fno-fast-math', '-ffp-contract=off']
+            flags += ['-I' + str(ROOT / 'platform/3ds/include')]
             if enabled is None:
                 # Check the shipped default, as well as both explicit A/B modes.
                 source.write_text(cpp + '\nstatic_assert(SOH3DS_EXPERIMENT_COMMON_PACK == 0, "Vertex optimization must remain off by default");\n')

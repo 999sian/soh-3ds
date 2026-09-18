@@ -513,6 +513,9 @@ extern "C" s32 OTRRoom_RequestNewRoom(PlayState* play, RoomContext* roomCtx, s32
         // DmaMgr_SendRequest2(&roomCtx->dmaRequest, roomCtx->unk_34, play->roomList[roomNum].vromStart, size, 0,
         //&roomCtx->loadQueue, NULL, __FILE__, __LINE__);
 
+#ifdef __3DS__
+        ResourceMgr_PrefetchRoom3DS(play->roomList[roomNum].fileName);
+#endif
         auto roomData = std::static_pointer_cast<SOH::Scene>(
             ResourceMgr_GetResourceByNameHandlingMQ(play->roomList[roomNum].fileName));
         if (roomData == nullptr) {

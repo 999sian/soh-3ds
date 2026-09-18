@@ -9,6 +9,38 @@ it is not a finished release. The main hardware target is New Nintendo 3DS / New
 Nintendo 2DS XL. CIA packaging requests the extended memory available on those
 systems; the development `.3dsx` does not provide the same memory configuration.
 
+## Old and New 3DS profiles (experimental)
+
+The lean compatibility target is built with:
+
+```sh
+SOH_BUILD_TARGET=soh_3ds_old scripts/build-3ds.sh
+```
+
+Despite the target name, this package detects the console model automatically.
+Old 3DS uses native 20 FPS presentation. New 3DS retains the configurable frame
+rate, faster CPU and L2 cache. Heap sizing uses the application's actual memory
+grant and free virtual address range. The CIA requests 80 MiB extended-memory
+mode on Old 3DS and 178 MiB application mode on New 3DS; these budgets include
+code, game resources, stacks, and GPU allocations.
+
+This lean target requires compatible pre-extracted `soh.o2r` and `oot.o2r`
+(or `oot-mq.o2r`) in `sd:/3ds/soh/`. It omits the on-device ROM extractor and
+uses a smaller archive reader with lazy filename resolution. Old-model startup
+loads standard audio fonts on demand and defers the normal-save check tracker
+logic graph until a tracker logic feature needs it. The normal `soh_3ds` target retains on-device
+setup. Both packages share the same title ID, so installing one replaces the
+other. Back up saves before switching experimental builds.
+
+An earlier 96 MiB build passed save loading, house-to-forest movement, pause,
+and Settings in Azahar at native 20 FPS gameplay, but crashed physical Old 3DS
+HOME Menu before startup. An 80 MiB diagnostic build launched on hardware and
+reported about 36 MiB of ordinary heap. The reduced-memory
+build now passes save loading, house-to-forest movement, pause/resume and
+Settings in Azahar with the 80 MiB layout. The observed minimum ordinary heap
+headroom was about 5.4 MiB, with no allocation exceptions in that route. All
+49 host regressions pass. Physical Old 3DS gameplay is not yet verified.
+
 ## Download
 
 [**v0.1.0-alpha.3 prerelease**](https://github.com/999sian/soh-3ds/releases/tag/v0.1.0-alpha.3)

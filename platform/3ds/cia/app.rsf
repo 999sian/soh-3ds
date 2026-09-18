@@ -90,6 +90,8 @@ AccessControlInfo:
 
   # Accessible SVCs, <Name>:<ID>
   SystemCallAccess: 
+    InvalidateProcessDataCache: 82
+    FlushProcessDataCache: 84
     ArbitrateAddress: 34
     Backdoor: 123
     Break: 60

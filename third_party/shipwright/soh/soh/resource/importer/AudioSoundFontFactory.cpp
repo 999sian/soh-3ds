@@ -1,6 +1,8 @@
 #include "soh/resource/importer/AudioSoundFontFactory.h"
 #include "soh/resource/type/AudioSoundFont.h"
 #include <tinyxml2.h>
+#include <memory>
+#include <stdexcept>
 #include <z64.h>
 #include "z64audio.h"
 #include <ship/Context.h>
@@ -8,6 +10,21 @@
 #include <ship/resource/ResourceManager.h>
 
 namespace SOH {
+namespace {
+Sample* LoadSoundFontSample(const std::string& path) {
+    // An absent slot is valid; a referenced file that failed to load is not.
+    if (path.empty()) {
+        return nullptr;
+    }
+    auto resource = Ship::Context::GetRawInstance()->GetResourceManager()->LoadResourceProcess(path.c_str());
+    auto sample = static_cast<Sample*>(resource ? resource->GetRawPointer() : nullptr);
+    if (sample == nullptr) {
+        throw std::runtime_error("Soundfont sample unavailable: " + path);
+    }
+    return sample;
+}
+} // namespace
+
 std::shared_ptr<Ship::IResource>
 ResourceFactoryBinaryAudioSoundFontV2::ReadResource(std::shared_ptr<Ship::File> file,
                                                     std::shared_ptr<Ship::ResourceInitData> initData) {
@@ -39,10 +56,14 @@ ResourceFactoryBinaryAudioSoundFontV2::ReadResource(std::shared_ptr<Ship::File> 
     audioSoundFont->soundFont.numSfx = soundEffectCount;
 
     // 🥁 DRUMS 🥁
-    // audioSoundFont->drums.reserve(audioSoundFont->soundFont.numDrums);
+    auto deleteEntry = [](auto* entry) {
+        delete[] entry->envelope;
+        delete entry;
+    };
     audioSoundFont->drumAddresses.reserve(audioSoundFont->soundFont.numDrums);
     for (uint32_t i = 0; i < audioSoundFont->soundFont.numDrums; i++) {
-        Drum* drum = new Drum;
+        std::unique_ptr<Drum, decltype(deleteEntry)> drumOwner(new Drum{}, deleteEntry);
+        Drum* drum = drumOwner.get();
         drum->releaseRate = reader->ReadUByte();
         drum->pan = reader->ReadUByte();
         drum->loaded = reader->ReadUByte();
@@ -62,29 +83,23 @@ ResourceFactoryBinaryAudioSoundFontV2::ReadResource(std::shared_ptr<Ship::File> 
         std::string sampleFileName = reader->ReadString();
         drum->sound.tuning = reader->ReadFloat();
 
-        if (sampleFileName.empty()) {
-            drum->sound.sample = nullptr;
-        } else {
-            auto res =
-                Ship::Context::GetRawInstance()->GetResourceManager()->LoadResourceProcess(sampleFileName.c_str());
-            drum->sound.sample = static_cast<Sample*>(res ? res->GetRawPointer() : nullptr);
-        }
+        drum->sound.sample = LoadSoundFontSample(sampleFileName);
 
         // audioSoundFont->drums.push_back(drum);
         //  BENTODO clean this up in V3.
         if (drum->sound.sample == nullptr) {
-            delete[] drum->envelope;
-            delete drum;
             audioSoundFont->drumAddresses.push_back(nullptr);
         } else {
             audioSoundFont->drumAddresses.push_back(drum);
+            drumOwner.release();
         }
     }
     audioSoundFont->soundFont.drums = audioSoundFont->drumAddresses.data();
 
     // 🎺🎻🎷🎸🎹 INSTRUMENTS 🎹🎸🎷🎻🎺
     for (uint32_t i = 0; i < audioSoundFont->soundFont.numInstruments; i++) {
-        Instrument* instrument = new Instrument;
+        std::unique_ptr<Instrument, decltype(deleteEntry)> instrumentOwner(new Instrument{}, deleteEntry);
+        Instrument* instrument = instrumentOwner.get();
 
         uint8_t isValidEntry = reader->ReadUByte();
         instrument->loaded = reader->ReadUByte();
@@ -110,9 +125,7 @@ ResourceFactoryBinaryAudioSoundFontV2::ReadResource(std::shared_ptr<Ship::File> 
             bool hasSampleRef = reader->ReadInt8();
             std::string sampleFileName = reader->ReadString();
             instrument->lowNotesSound.tuning = reader->ReadFloat();
-            auto res =
-                Ship::Context::GetRawInstance()->GetResourceManager()->LoadResourceProcess(sampleFileName.c_str());
-            instrument->lowNotesSound.sample = static_cast<Sample*>(res ? res->GetRawPointer() : nullptr);
+            instrument->lowNotesSound.sample = LoadSoundFontSample(sampleFileName);
         } else {
             instrument->lowNotesSound.sample = nullptr;
             instrument->lowNotesSound.tuning = 0;
@@ -124,9 +137,7 @@ ResourceFactoryBinaryAudioSoundFontV2::ReadResource(std::shared_ptr<Ship::File> 
             bool hasSampleRef = reader->ReadInt8();
             std::string sampleFileName = reader->ReadString();
             instrument->normalNotesSound.tuning = reader->ReadFloat();
-            auto res =
-                Ship::Context::GetRawInstance()->GetResourceManager()->LoadResourceProcess(sampleFileName.c_str());
-            instrument->normalNotesSound.sample = static_cast<Sample*>(res ? res->GetRawPointer() : nullptr);
+            instrument->normalNotesSound.sample = LoadSoundFontSample(sampleFileName);
         } else {
             instrument->normalNotesSound.sample = nullptr;
             instrument->normalNotesSound.tuning = 0;
@@ -137,9 +148,7 @@ ResourceFactoryBinaryAudioSoundFontV2::ReadResource(std::shared_ptr<Ship::File> 
             bool hasSampleRef = reader->ReadInt8();
             std::string sampleFileName = reader->ReadString();
             instrument->highNotesSound.tuning = reader->ReadFloat();
-            auto res =
-                Ship::Context::GetRawInstance()->GetResourceManager()->LoadResourceProcess(sampleFileName.c_str());
-            instrument->highNotesSound.sample = static_cast<Sample*>(res ? res->GetRawPointer() : nullptr);
+            instrument->highNotesSound.sample = LoadSoundFontSample(sampleFileName);
         } else {
             instrument->highNotesSound.sample = nullptr;
             instrument->highNotesSound.tuning = 0;
@@ -147,9 +156,8 @@ ResourceFactoryBinaryAudioSoundFontV2::ReadResource(std::shared_ptr<Ship::File> 
 
         if (isValidEntry) {
             audioSoundFont->instrumentAddresses.push_back(instrument);
+            instrumentOwner.release();
         } else {
-            delete[] instrument->envelope;
-            delete instrument;
             audioSoundFont->instrumentAddresses.push_back(nullptr);
         }
     }
@@ -158,16 +166,14 @@ ResourceFactoryBinaryAudioSoundFontV2::ReadResource(std::shared_ptr<Ship::File> 
     // 🔊 SOUND EFFECTS 🔊
     audioSoundFont->soundEffects.reserve(audioSoundFont->soundFont.numSfx);
     for (uint32_t i = 0; i < audioSoundFont->soundFont.numSfx; i++) {
-        SoundFontSound soundEffect;
+        SoundFontSound soundEffect{};
 
         bool hasSFEntry = reader->ReadInt8();
         if (hasSFEntry) {
             bool hasSampleRef = reader->ReadInt8();
             std::string sampleFileName = reader->ReadString();
             soundEffect.tuning = reader->ReadFloat();
-            auto res =
-                Ship::Context::GetRawInstance()->GetResourceManager()->LoadResourceProcess(sampleFileName.c_str());
-            soundEffect.sample = static_cast<Sample*>(res ? res->GetRawPointer() : nullptr);
+            soundEffect.sample = LoadSoundFontSample(sampleFileName);
         }
 
         audioSoundFont->soundEffects.push_back(soundEffect);

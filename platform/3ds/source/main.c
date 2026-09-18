@@ -73,7 +73,8 @@ int main(void) {
         osSetSpeedupEnable(true);
     }
 
-    C3D_Init(C3D_DEFAULT_CMDBUF_SIZE);
+    // Allocate 1 MiB GPU command buffer for headroom.
+    C3D_Init(1024 * 1024);
     C2D_Init(C2D_DEFAULT_MAX_OBJECTS);
     C2D_Prepare();
 

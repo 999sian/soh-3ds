@@ -100,7 +100,13 @@ std::shared_ptr<std::vector<std::string>> ArchiveManager::ListFiles(const std::l
         if (archive == nullptr) {
             continue;
         }
-        for (const auto& [hash, path] : *archive->ListFiles()) {
+        // Scene eviction requests one directory. Filter before materializing
+        // a lazy archive snapshot so cleanup does not need a full filename map.
+        // Keep ownership through iteration: lazy snapshots are not archive-owned.
+        const auto files = includes.size() == 1 && !includes.front().empty()
+                               ? archive->ListFiles(includes.front())
+                               : archive->ListFiles();
+        for (const auto& [hash, path] : *files) {
             // Emit each hash once, from whichever archive wins it, so a file
             // present in several archives is not listed per copy.
             if (ResolveArchive(hash) != archive) {

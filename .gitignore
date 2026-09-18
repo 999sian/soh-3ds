@@ -20,6 +20,7 @@ _deps/
 *.shbin
 *.map
 *.log
+*.core
 
 # User-supplied ROMs, extracted game archives and saves
 *.z64

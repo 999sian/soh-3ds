@@ -37,6 +37,15 @@ void SkinMatrix_Vec3fMtxFMultXYZW(MtxF* mf, Vec3f* src, Vec3f* xyzDest, f32* wDe
  * \f]
  */
 void SkinMatrix_Vec3fMtxFMultXYZ(MtxF* mf, Vec3f* src, Vec3f* dest) {
+#if defined(__3DS__) && !defined(SOH3DS_DISABLE_ARM11_ASM)
+    // Identical arithmetic to Matrix_MultVec3fExt, which matrix_vec.S already
+    // provides in ARM11 assembly: this computes mw + ((sx*mx) + (sy*my) +
+    // (sz*mz)) while that computes mw + ((mx*sx) + (my*sy) + (mz*sz)). IEEE
+    // multiplication is commutative and exact, and the additions are in the
+    // same order, so the two are bit-identical. The kernel's own test already
+    // covers aliased and overlapping destinations.
+    Matrix_MultVec3fExt(src, dest, mf);
+#else
     f32 mx = mf->xx;
     f32 my = mf->xy;
     f32 mz = mf->xz;
@@ -53,12 +62,20 @@ void SkinMatrix_Vec3fMtxFMultXYZ(MtxF* mf, Vec3f* src, Vec3f* dest) {
     mz = mf->zz;
     mw = mf->zw;
     dest->z = mw + ((src->x * mx) + (src->y * my) + (src->z * mz));
+#endif
 }
 
 /**
  * Matrix multiplication, dest = mfA * mfB.
  * mfB and dest should not be the same matrix.
  */
+#if defined(__3DS__) && defined(ARM11) && defined(SOH3DS_ARM11_MATRIX_MULT) && \
+    !defined(SOH3DS_DISABLE_ARM11_MATRIX_MULT)
+void Soh3dsSkinMatrixMultArm11(MtxF* mfA, MtxF* mfB, MtxF* dest);
+void SkinMatrix_MtxFMtxFMult(MtxF* mfA, MtxF* mfB, MtxF* dest) {
+    Soh3dsSkinMatrixMultArm11(mfA, mfB, dest);
+}
+#else
 void SkinMatrix_MtxFMtxFMult(MtxF* mfA, MtxF* mfB, MtxF* dest) {
     f32 cx;
     f32 cy;
@@ -185,6 +202,7 @@ void SkinMatrix_MtxFMtxFMult(MtxF* mfA, MtxF* mfB, MtxF* dest) {
     cw = mfB->ww;
     dest->ww = (rx * cx) + (ry * cy) + (rz * cz) + (rw * cw);
 }
+#endif
 
 /**
  * "Clear" in this file means the identity matrix.

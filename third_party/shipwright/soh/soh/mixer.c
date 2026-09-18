@@ -3,8 +3,15 @@
 
 #include <stdint.h>
 #include <string.h>
+#ifdef __3DS__
+#include <arm_acle.h>
+#include "compat3ds/arm11/kernels.h"
+#endif
 
 #include "mixer.h"
+#ifdef SOH3DS_AUDIO_PROFILE
+#include "ship/utils/audio_profile_3ds.h"
+#endif
 
 #ifndef __clang__
 #ifndef _MSC_VER
@@ -89,6 +96,9 @@ static struct {
     } buf;
 } rspa;
 
+#ifdef __3DS__
+__attribute__((aligned(4)))
+#endif
 static int16_t resample_table[64][4] = {
     { 0x0c39, 0x66ad, 0x0d46, 0xffdf }, { 0x0b39, 0x6696, 0x0e5f, 0xffd8 }, { 0x0a44, 0x6669, 0x0f83, 0xffd0 },
     { 0x095a, 0x6626, 0x10b4, 0xffc8 }, { 0x087d, 0x65cd, 0x11f0, 0xffbf }, { 0x07ab, 0x655e, 0x1338, 0xffb6 },
@@ -118,12 +128,18 @@ static void aMixImplSSE2(uint16_t count, int16_t gain, uint16_t in_addr, uint16_
 static void aMixImplNEON(uint16_t count, int16_t gain, uint16_t in_addr, uint16_t out_addr);
 
 static inline int16_t clamp16(int32_t v) {
+#ifdef __3DS__
+    // ARM11 has signed saturation even though it has no NEON. Preserve the
+    // scalar result exactly without a branch/call for each mixed sample.
+    return (int16_t)__ssat(v, 16);
+#else
     if (v < -0x8000) {
         return -0x8000;
     } else if (v > 0x7fff) {
         return 0x7fff;
     }
     return (int16_t)v;
+#endif
 }
 
 static inline int32_t clamp32(int64_t v) {
@@ -135,12 +151,22 @@ static inline int32_t clamp32(int64_t v) {
     return (int32_t)v;
 }
 
+#ifdef SOH3DS_DSP_CAPTURE
+#include "dsp_mixer_hooks_impl.h"
+#endif
+
 void aClearBufferImpl(uint16_t addr, int nbytes) {
+#ifdef SOH3DS_DSP_CAPTURE
+    SOH_DSP_CAPTURE_CALL(Clear, NULL, 0, 0, addr, nbytes, 0, 0, 0);
+#endif
     nbytes = ROUND_UP_16(nbytes);
     memset(BUF_U8(addr), 0, nbytes);
 }
 
 void aLoadBufferImpl(const void* source_addr, uint16_t dest_addr, uint16_t nbytes) {
+#ifdef SOH3DS_DSP_CAPTURE
+    SOH_DSP_CAPTURE_CALL(Load, source_addr, nbytes, 1, dest_addr, nbytes, 0, 0, 0);
+#endif
     if (!SOH3DS_AUDIO_GUARD("aLoadBuffer", source_addr, nbytes)) {
         memset(BUF_U8(dest_addr), 0, nbytes);
         return;
@@ -158,6 +184,12 @@ void aLoadBufferImpl(const void* source_addr, uint16_t dest_addr, uint16_t nbyte
 
 void aOPUSdecImpl(void* source_addr, uint16_t dest_addr, uint16_t nbytes, struct OggOpusFile** decState, int32_t pos,
                   uint32_t size) {
+#ifdef SOH3DS_DSP_CAPTURE
+    SOH_DSP_CAPTURE_BARRIER();
+#endif
+#ifdef SOH3DS_AUDIO_PROFILE
+    Soh3dsAudioProfileCount(SOH3DS_AUDIO_OPUS, 1);
+#endif
     int readSamples = 0;
     if (*decState == NULL) {
         *decState = op_open_memory(source_addr, size, NULL);
@@ -177,10 +209,16 @@ void aOPUSdecImpl(void* source_addr, uint16_t dest_addr, uint16_t nbytes, struct
 }
 
 void aOPUSFree(struct OggOpusFile* opusFile) {
+#ifdef SOH3DS_DSP_CAPTURE
+    SOH_DSP_CAPTURE_BARRIER();
+#endif
     op_free(opusFile);
 }
 
 void aSaveBufferImpl(uint16_t source_addr, int16_t* dest_addr, uint16_t nbytes) {
+#ifdef SOH3DS_DSP_CAPTURE
+    SOH_DSP_CAPTURE_CALL(Save, dest_addr, ROUND_DOWN_16(nbytes), 1, source_addr, nbytes, 0, 0, 0);
+#endif
     if (!SOH3DS_AUDIO_GUARD("aSaveBuffer", dest_addr, ROUND_DOWN_16(nbytes))) {
         return;
     }
@@ -188,6 +226,9 @@ void aSaveBufferImpl(uint16_t source_addr, int16_t* dest_addr, uint16_t nbytes) 
 }
 
 void aLoadADPCMImpl(int num_entries_times_16, const int16_t* book_source_addr) {
+#ifdef SOH3DS_DSP_CAPTURE
+    SOH_DSP_CAPTURE_CALL(Book, book_source_addr, num_entries_times_16, 1, num_entries_times_16, 0, 0, 0, 0);
+#endif
     if (!SOH3DS_AUDIO_GUARD("aLoadADPCM", book_source_addr, (uint32_t)num_entries_times_16)) {
         memset(rspa.adpcm_table, 0, sizeof(rspa.adpcm_table));
         return;
@@ -196,16 +237,25 @@ void aLoadADPCMImpl(int num_entries_times_16, const int16_t* book_source_addr) {
 }
 
 void aSetBufferImpl(uint8_t flags, uint16_t in, uint16_t out, uint16_t nbytes) {
+#ifdef SOH3DS_DSP_CAPTURE
+    SOH_DSP_CAPTURE_CALL(Buffer, NULL, 0, 0, flags, in, out, nbytes, 0);
+#endif
     rspa.in = in;
     rspa.out = out;
     rspa.nbytes = nbytes;
 }
 
 void aInterleaveImpl(uint16_t dest, uint16_t left, uint16_t right, uint16_t c) {
+#ifdef SOH3DS_DSP_CAPTURE
+    SOH_DSP_CAPTURE_CALL(Interleave, NULL, 0, 0, dest, left, right, c, 0);
+#endif
     int count = ROUND_UP_8(c) / sizeof(int16_t) / 4;
     int16_t* l = BUF_S16(left);
     int16_t* r = BUF_S16(right);
     int16_t* d = BUF_S16(dest);
+#if defined(__3DS__) && !defined(SOH3DS_DISABLE_ARM11_ASM)
+    if (count > 0) Soh3dsInterleaveArm11(l, r, d, (uint32_t)count);
+#else
     while (count > 0) {
         int16_t l0 = *l++;
         int16_t l1 = *l++;
@@ -225,18 +275,33 @@ void aInterleaveImpl(uint16_t dest, uint16_t left, uint16_t right, uint16_t c) {
         *d++ = r3;
         --count;
     }
+#endif
 }
 
 void aDMEMMoveImpl(uint16_t in_addr, uint16_t out_addr, int nbytes) {
+#ifdef SOH3DS_DSP_CAPTURE
+    SOH_DSP_CAPTURE_CALL(Move, NULL, 0, 0, in_addr, out_addr, nbytes, 0, 0);
+#endif
     nbytes = ROUND_UP_16(nbytes);
     memmove(BUF_U8(out_addr), BUF_U8(in_addr), nbytes);
 }
 
 void aSetLoopImpl(ADPCM_STATE* adpcm_loop_state) {
+#ifdef SOH3DS_DSP_CAPTURE
+    SOH_DSP_CAPTURE_CALL(Loop, adpcm_loop_state, 32, 1, 0, 0, 0, 0, 0);
+#endif
     rspa.adpcm_loop_state = adpcm_loop_state;
 }
 
 void aADPCMdecImpl(uint8_t flags, ADPCM_STATE state) {
+#ifdef SOH3DS_DSP_CAPTURE
+    if (!(flags & A_LOOP) || (flags & A_INIT) || soh_dsp_loop_ready()) {
+        SOH_DSP_CAPTURE_CALL(Adpcm, state, 32, 1, flags, 0, 0, 0, 0);
+    }
+#endif
+#ifdef SOH3DS_AUDIO_PROFILE
+    Soh3dsAudioProfileCount(SOH3DS_AUDIO_ADPCM, 1);
+#endif
     uint8_t* in = BUF_U8(rspa.in);
     int16_t* out = BUF_S16(rspa.out);
     int nbytes = ROUND_UP_32(rspa.nbytes);
@@ -282,6 +347,10 @@ void aADPCMdecImpl(uint8_t flags, ADPCM_STATE state) {
                     ins[j * 2 + 1] = (((*in++ & 0xf) << 28) >> 28) << shift;
                 }
             }
+#if defined(__3DS__) && !defined(SOH3DS_DISABLE_ARM11_ASM)
+            Soh3dsAdpcmHalfArm11(out, ins, tbl);
+            out += 8;
+#else
             for (j = 0; j < 8; j++) {
                 int32_t acc = tbl[0][j] * prev2 + tbl[1][j] * prev1 + (ins[j] << 11);
                 for (k = 0; k < j; k++) {
@@ -290,6 +359,7 @@ void aADPCMdecImpl(uint8_t flags, ADPCM_STATE state) {
                 acc >>= 11;
                 *out++ = clamp16(acc);
             }
+#endif
         }
         nbytes -= 16 * sizeof(int16_t);
     }
@@ -299,6 +369,12 @@ void aADPCMdecImpl(uint8_t flags, ADPCM_STATE state) {
 }
 
 void aResampleImpl(uint8_t flags, uint16_t pitch, RESAMPLE_STATE state) {
+#ifdef SOH3DS_DSP_CAPTURE
+    SOH_DSP_CAPTURE_CALL(Resample, state, 32, 1, flags, pitch, 0, 0, 0);
+#endif
+#ifdef SOH3DS_AUDIO_PROFILE
+    Soh3dsAudioProfileCount(SOH3DS_AUDIO_RESAMPLE, 1);
+#endif
     int16_t tmp[16];
     int16_t* in_initial = BUF_S16(rspa.in);
     int16_t* in = in_initial;
@@ -330,6 +406,11 @@ void aResampleImpl(uint8_t flags, uint16_t pitch, RESAMPLE_STATE state) {
     pitch_accumulator = (uint16_t)tmp[4];
     memcpy(in, tmp, 4 * sizeof(int16_t));
 
+#if defined(__3DS__) && !defined(SOH3DS_DISABLE_ARM11_ASM)
+    // Preserve the C path's minimum eight samples even for a zero-byte command.
+    in = Soh3dsResampleArm11(in, out, &pitch_accumulator, (uint32_t)pitch << 1,
+                            (uint32_t)(nbytes > 0 ? nbytes : 16) / sizeof(int16_t), resample_table);
+#else
     do {
         for (i = 0; i < 8; i++) {
             tbl = resample_table[pitch_accumulator * 64 >> 16];
@@ -343,6 +424,7 @@ void aResampleImpl(uint8_t flags, uint16_t pitch, RESAMPLE_STATE state) {
         }
         nbytes -= 8 * sizeof(int16_t);
     } while (nbytes > 0);
+#endif
 
     state[4] = (int16_t)pitch_accumulator;
     memcpy(state, in, 4 * sizeof(int16_t));
@@ -356,6 +438,9 @@ void aResampleImpl(uint8_t flags, uint16_t pitch, RESAMPLE_STATE state) {
 }
 
 void aEnvSetup1Impl(uint8_t initial_vol_wet, uint16_t rate_wet, uint16_t rate_left, uint16_t rate_right) {
+#ifdef SOH3DS_DSP_CAPTURE
+    SOH_DSP_CAPTURE_CALL(Env1, NULL, 0, 0, initial_vol_wet, rate_wet, rate_left, rate_right, 0);
+#endif
     rspa.vol_wet = (uint16_t)(initial_vol_wet << 8);
     rspa.rate_wet = rate_wet;
     rspa.rate[0] = rate_left;
@@ -363,12 +448,21 @@ void aEnvSetup1Impl(uint8_t initial_vol_wet, uint16_t rate_wet, uint16_t rate_le
 }
 
 void aEnvSetup2Impl(uint16_t initial_vol_left, uint16_t initial_vol_right) {
+#ifdef SOH3DS_DSP_CAPTURE
+    SOH_DSP_CAPTURE_CALL(Env2, NULL, 0, 0, initial_vol_left, initial_vol_right, 0, 0, 0);
+#endif
     rspa.vol[0] = initial_vol_left;
     rspa.vol[1] = initial_vol_right;
 }
 
 void aEnvMixerImpl(uint16_t in_addr, uint16_t n_samples, bool swap_reverb, bool neg_3, bool neg_2, bool neg_left,
                    bool neg_right, int32_t wet_dry_addr, u32 unk) {
+#ifdef SOH3DS_DSP_CAPTURE
+    SOH_DSP_CAPTURE_CALL(Envelope, NULL, 0, 0, in_addr, n_samples, (swap_reverb ? 1u : 0u) | (neg_3 ? 2u : 0u) | (neg_2 ? 4u : 0u) | (neg_left ? 8u : 0u) | (neg_right ? 16u : 0u), wet_dry_addr, unk);
+#endif
+#ifdef SOH3DS_AUDIO_PROFILE
+    Soh3dsAudioProfileCount(SOH3DS_AUDIO_ENVELOPE, 1);
+#endif
     int16_t* in = BUF_S16(in_addr);
     int16_t* dry[2] = { BUF_S16(((wet_dry_addr >> 24) & 0xFF) << 4), BUF_S16(((wet_dry_addr >> 16) & 0xFF) << 4) };
     int16_t* wet[2] = { BUF_S16(((wet_dry_addr >> 8) & 0xFF) << 4), BUF_S16(((wet_dry_addr)&0xFF) << 4) };
@@ -380,6 +474,14 @@ void aEnvMixerImpl(uint16_t in_addr, uint16_t n_samples, bool swap_reverb, bool 
     uint16_t rates[2] = { rspa.rate[0], rspa.rate[1] };
     uint16_t vol_wet = rspa.vol_wet;
     uint16_t rate_wet = rspa.rate_wet;
+
+#if defined(__3DS__) && !defined(SOH3DS_DISABLE_ARM11_ASM)
+    const uint16_t asmVols[3] = { vols[0], vols[1], vol_wet };
+    const uint16_t asmRates[3] = { rates[0], rates[1], rate_wet };
+    const int32_t asmNegs[4] = { negs[0], negs[1], negs[2], negs[3] };
+    Soh3dsEnvMixerArm11(in, dry, wet, n > 0 ? n : 8, asmVols, asmRates, asmNegs, swap_reverb);
+    return;
+#endif
 
     do {
         for (int i = 0; i < 8; i++) {
@@ -431,7 +533,16 @@ static void aMixImplRef(uint16_t count, int16_t gain, uint16_t in_addr, uint16_t
 }
 
 void aMixImpl(uint16_t count, int16_t gain, uint16_t in_addr, uint16_t out_addr) {
-#if defined(__SSE2__) || defined(_M_AMD64)
+#ifdef SOH3DS_DSP_CAPTURE
+    SOH_DSP_CAPTURE_CALL(Mix, NULL, 0, 0, count, gain, in_addr, out_addr, 0);
+#endif
+#ifdef SOH3DS_AUDIO_PROFILE
+    Soh3dsAudioProfileCount(SOH3DS_AUDIO_GAIN, 1);
+#endif
+#if defined(__3DS__) && !defined(SOH3DS_DISABLE_ARM11_ASM)
+    Soh3dsMixArm11(BUF_S16(in_addr), BUF_S16(out_addr), gain,
+                   ROUND_UP_32(ROUND_DOWN_16(count << 4)) / sizeof(int16_t));
+#elif defined(__SSE2__) || defined(_M_AMD64)
     aMixImplSSE2(count, gain, in_addr, out_addr);
 #elif defined(__ARM_NEON)
     aMixImplNEON(count, gain, in_addr, out_addr);
@@ -441,6 +552,11 @@ void aMixImpl(uint16_t count, int16_t gain, uint16_t in_addr, uint16_t out_addr)
 }
 
 void aS8DecImpl(uint8_t flags, ADPCM_STATE state) {
+#ifdef SOH3DS_DSP_CAPTURE
+    if (!(flags & A_LOOP) || (flags & A_INIT) || soh_dsp_loop_ready()) {
+        SOH_DSP_CAPTURE_CALL(S8, state, 32, 1, flags, 0, 0, 0, 0);
+    }
+#endif
     uint8_t* in = BUF_U8(rspa.in);
     int16_t* out = BUF_S16(rspa.out);
     int nbytes = ROUND_UP_32(rspa.nbytes);
@@ -488,9 +604,15 @@ void aS8DecImpl(uint8_t flags, ADPCM_STATE state) {
 }
 
 void aAddMixerImpl(uint16_t count, uint16_t in_addr, uint16_t out_addr) {
+#ifdef SOH3DS_DSP_CAPTURE
+    SOH_DSP_CAPTURE_CALL(Add, NULL, 0, 0, count, in_addr, out_addr, 0, 0);
+#endif
     int16_t* in = BUF_S16(in_addr);
     int16_t* out = BUF_S16(out_addr);
     int nbytes = ROUND_UP_64(ROUND_DOWN_16(count));
+#if defined(__3DS__) && !defined(SOH3DS_DISABLE_ARM11_ASM)
+    Soh3dsAddMixerArm11(in, out, (uint32_t)nbytes / sizeof(int16_t));
+#else
 
     do {
         *out = clamp16(*out + *in++);
@@ -528,9 +650,13 @@ void aAddMixerImpl(uint16_t count, uint16_t in_addr, uint16_t out_addr) {
 
         nbytes -= 16 * sizeof(int16_t);
     } while (nbytes > 0);
+#endif
 }
 
 void aDuplicateImpl(uint16_t count, uint16_t in_addr, uint16_t out_addr) {
+#ifdef SOH3DS_DSP_CAPTURE
+    SOH_DSP_CAPTURE_CALL(Duplicate, NULL, 0, 0, count, in_addr, out_addr, 0, 0);
+#endif
     uint8_t* in = BUF_U8(in_addr);
     uint8_t* out = BUF_U8(out_addr);
 
@@ -543,6 +669,9 @@ void aDuplicateImpl(uint16_t count, uint16_t in_addr, uint16_t out_addr) {
 }
 
 void aResampleZohImpl(uint16_t pitch, uint16_t start_fract) {
+#ifdef SOH3DS_DSP_CAPTURE
+    SOH_DSP_CAPTURE_CALL(Zoh, NULL, 0, 0, pitch, start_fract, 0, 0, 0);
+#endif
     int16_t* in = BUF_S16(rspa.in);
     int16_t* out = BUF_S16(rspa.out);
     int nbytes = ROUND_UP_8(rspa.nbytes);
@@ -564,10 +693,17 @@ void aResampleZohImpl(uint16_t pitch, uint16_t start_fract) {
 }
 
 void aInterlImpl(uint16_t in_addr, uint16_t out_addr, uint16_t n_samples) {
+#ifdef SOH3DS_DSP_CAPTURE
+    SOH_DSP_CAPTURE_CALL(Interl, NULL, 0, 0, in_addr, out_addr, n_samples, 0, 0);
+#endif
     int16_t* in = BUF_S16(in_addr);
     int16_t* out = BUF_S16(out_addr);
     int n = ROUND_UP_8(n_samples);
 
+#if defined(__3DS__) && !defined(SOH3DS_DISABLE_ARM11_ASM)
+    // do/while: a zero count still processes one group of eight samples.
+    Soh3dsInterlArm11(in, out, n > 0 ? (uint32_t)n / 8u : 1u);
+#else
     do {
         *out++ = *in++;
         in++;
@@ -588,9 +724,16 @@ void aInterlImpl(uint16_t in_addr, uint16_t out_addr, uint16_t n_samples) {
 
         n -= 8;
     } while (n > 0);
+#endif
 }
 
 void aFilterImpl(uint8_t flags, uint16_t count_or_buf, int16_t* state_or_filter) {
+#ifdef SOH3DS_DSP_CAPTURE
+    SOH_DSP_CAPTURE_CALL(Filter, state_or_filter, flags > A_INIT ? 16 : 32, 1, flags, count_or_buf, 0, 0, 0);
+#endif
+#ifdef SOH3DS_AUDIO_PROFILE
+    if (flags <= A_INIT) Soh3dsAudioProfileCount(SOH3DS_AUDIO_FILTER, 1);
+#endif
     if (flags > A_INIT) {
         rspa.filter_count = ROUND_UP_16(count_or_buf);
         if (!SOH3DS_AUDIO_GUARD("aFilter.coeff", state_or_filter, sizeof(rspa.filter))) {
@@ -629,6 +772,10 @@ void aFilterImpl(uint8_t flags, uint16_t count_or_buf, int16_t* state_or_filter)
             rspa.filter[i] = (tmp2[i] + rspa.filter[i]) / 2;
         }
 
+#if defined(__3DS__) && defined(SOH3DS_ARM11_FILTER_ASM) && !defined(SOH3DS_DISABLE_ARM11_ASM)
+        // Retain the C do/while behavior when the rounded 16-bit count is zero.
+        Soh3dsFilterArm11(buf, tmp, rspa.filter, count > 0 ? count / sizeof(int16_t) : 8);
+#else
         do {
             memcpy(tmp + 8, buf, 8 * sizeof(int16_t));
             for (int i = 0; i < 8; i++) {
@@ -643,6 +790,7 @@ void aFilterImpl(uint8_t flags, uint16_t count_or_buf, int16_t* state_or_filter)
             buf += 8;
             count -= 8 * sizeof(int16_t);
         } while (count > 0);
+#endif
 
         if (SOH3DS_AUDIO_GUARD("aFilter.state", state_or_filter, 16 * sizeof(int16_t))) {
             memcpy(state_or_filter, tmp, 8 * sizeof(int16_t));
@@ -652,6 +800,9 @@ void aFilterImpl(uint8_t flags, uint16_t count_or_buf, int16_t* state_or_filter)
 }
 
 void aHiLoGainImpl(uint8_t g, uint16_t count, uint16_t addr) {
+#ifdef SOH3DS_DSP_CAPTURE
+    SOH_DSP_CAPTURE_CALL(HiLo, NULL, 0, 0, g, count, addr, 0, 0);
+#endif
     int16_t* samples = BUF_S16(addr);
     int nbytes = ROUND_UP_32(count);
 
@@ -678,9 +829,15 @@ void aHiLoGainImpl(uint8_t g, uint16_t count, uint16_t addr) {
 }
 
 void aUnkCmd3Impl(uint16_t a, uint16_t b, uint16_t c) {
+#ifdef SOH3DS_DSP_CAPTURE
+    SOH_DSP_CAPTURE_CALL(Noop3, NULL, 0, 0, a, b, c, 0, 0);
+#endif
 }
 
 void aUnkCmd19Impl(uint8_t f, uint16_t count, uint16_t out_addr, uint16_t in_addr) {
+#ifdef SOH3DS_DSP_CAPTURE
+    SOH_DSP_CAPTURE_CALL(TableMultiply, NULL, 0, 0, f, count, out_addr, in_addr, 0);
+#endif
     int nbytes = ROUND_UP_64(count);
     int16_t* in = BUF_S16(in_addr + f);
     int16_t* out = BUF_S16(out_addr);

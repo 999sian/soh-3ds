@@ -1,3 +1,4 @@
+#include "fast/backends/game_profile_3ds.h"
 #include "global.h"
 #include "vt.h"
 #include <string.h>
@@ -18,6 +19,19 @@ void SkelAnime_CopyFrameTable(SkelAnime* skelAnime, Vec3s* dst, Vec3s* src);
 
 static u32 sDisableAnimQueueFlags = 0;
 static u32 sAnimQueueFlags;
+
+#ifdef __3DS__
+static inline int SkelAnime_GetDisableLOD(void) {
+    static int sCached = 0;
+    static u32 sCounter = 0;
+    if ((++sCounter & 63) == 1) {
+        sCached = CVarGetInteger(CVAR_ENHANCEMENT("DisableLOD"), 0);
+    }
+    return sCached;
+}
+#else
+#define SkelAnime_GetDisableLOD() CVarGetInteger(CVAR_ENHANCEMENT("DisableLOD"), 0)
+#endif
 
 /**
  * Draw a limb of type `LodLimb`
@@ -80,7 +94,7 @@ void SkelAnime_DrawLod(PlayState* play, void** skeleton, Vec3s* jointTable, Over
     Vec3f pos;
     Vec3s rot;
 
-    if (CVarGetInteger(CVAR_ENHANCEMENT("DisableLOD"), 0)) {
+    if (SkelAnime_GetDisableLOD()) {
         lod = 0;
     }
 
@@ -198,7 +212,7 @@ void SkelAnime_DrawFlexLod(PlayState* play, void** skeleton, Vec3s* jointTable, 
     Vec3s rot;
     Mtx* mtx = Graph_Alloc(play->state.gfxCtx, dListCount * sizeof(Mtx));
 
-    if (CVarGetInteger(CVAR_ENHANCEMENT("DisableLOD"), 0)) {
+    if (SkelAnime_GetDisableLOD()) {
         lod = 0;
     }
 
@@ -1077,6 +1091,7 @@ void AnimationContext_MoveActor(PlayState* play, AnimationEntryData* data) {
  * Performs all requests in the animation queue, then resets the queue flags.
  */
 void AnimationContext_Update(PlayState* play, AnimationContext* animationCtx) {
+    SOH3DS_GAME_PROFILE_SCOPE(profile, SOH3DS_GAME_ANIMATION);
     static AnimationEntryCallback animFuncs[] = {
         AnimationContext_LoadFrame, AnimationContext_CopyAll,   AnimationContext_Interp,
         AnimationContext_CopyTrue,  AnimationContext_CopyFalse, AnimationContext_MoveActor,

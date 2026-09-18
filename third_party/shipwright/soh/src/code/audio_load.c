@@ -1432,15 +1432,15 @@ void AudioLoad_Init(void* heap, size_t heapSize) {
     fontMap = calloc(customFntListSize + fntListSize, sizeof(char*));
     fontMapSize = customFntListSize + fntListSize;
     for (int i = 0; i < fntListSize; i++) {
-        SoundFont* sf = ResourceMgr_LoadAudioSoundFontByName(fntList[i]);
+        int fontIndex = ResourceMgr_GetAudioSoundFontIndex(fntList[i]);
         // SoH-3DS: fntIndex comes from resource data; unchecked it wrote a
         // pointer at an arbitrary heap offset. A failed font load (sf NULL)
         // previously deref'd here too.
-        if (sf == NULL || sf->fntIndex < 0 || (size_t)sf->fntIndex >= fontMapSize) {
+        if (fontIndex < 0 || (size_t)fontIndex >= fontMapSize) {
             fprintf(stderr, "audio init: font %s unloadable or out-of-range fntIndex, skipped\n", fntList[i]);
             continue;
         }
-        fontMap[sf->fntIndex] = strdup(fntList[i]);
+        fontMap[fontIndex] = strdup(fntList[i]);
     }
 
     for (int i = 0; i < fntListSize; i++) {

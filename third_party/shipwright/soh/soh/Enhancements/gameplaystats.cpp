@@ -250,8 +250,6 @@ typedef struct {
 // Names and colors are set up at the bottom of this file.
 // Times are stored in gSaveContext.ship.stats.itemTimestamp.
 TimestampInfo itemTimestampDisplay[TIMESTAMP_MAX];
-TimestampInfo sceneTimestampDisplay[8191];
-// std::vector<TimestampInfo> sceneTimestampDisplay;
 
 std::string formatTimestampGameplayStat(uint32_t value) {
     uint32_t sec = value / 10;
@@ -587,37 +585,30 @@ void DrawGameplayStatsCountsTab() {
 }
 
 void DrawGameplayStatsBreakdownTab() {
-    for (u32 i = 0; i < gSaveContext.ship.stats.tsIdx; i++) {
-        std::string sceneName = ResolveSceneID(gSaveContext.ship.stats.sceneTimestamps[i].scene,
-                                               gSaveContext.ship.stats.sceneTimestamps[i].room);
-        std::string name;
-        if (CVarGetInteger(CVAR_GAMEPLAY_STATS("RoomBreakdown"), 0) &&
-            gSaveContext.ship.stats.sceneTimestamps[i].scene != SCENE_GROTTOS) {
-            name =
-                spdlog::fmt_lib::format("{:s} Room {:d}", sceneName, gSaveContext.ship.stats.sceneTimestamps[i].room);
-        } else {
-            name = sceneName;
-        }
-        strcpy(sceneTimestampDisplay[i].name, name.c_str());
-        sceneTimestampDisplay[i].time = CVarGetInteger(CVAR_GAMEPLAY_STATS("RoomBreakdown"), 0)
-                                            ? gSaveContext.ship.stats.sceneTimestamps[i].roomTime
-                                            : gSaveContext.ship.stats.sceneTimestamps[i].sceneTime;
-        sceneTimestampDisplay[i].color = COLOR_GREY;
-        sceneTimestampDisplay[i].isRoom = gSaveContext.ship.stats.sceneTimestamps[i].isRoom;
-    }
-
+    const bool roomBreakdown = CVarGetInteger(CVAR_GAMEPLAY_STATS("RoomBreakdown"), 0);
     ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, { 4.0f, 4.0f });
     ImGui::BeginTable("gameplayStatsCounts", 1, ImGuiTableFlags_BordersOuter);
     ImGui::TableSetupColumn("stat", ImGuiTableColumnFlags_WidthStretch);
-    for (u32 i = 0; i < gSaveContext.ship.stats.tsIdx; i++) {
-        TimestampInfo tsInfo = sceneTimestampDisplay[i];
-        bool canShow = !tsInfo.isRoom || CVarGetInteger(CVAR_GAMEPLAY_STATS("RoomBreakdown"), 0);
-        if (tsInfo.time > 0 && strnlen(tsInfo.name, 40) > 1 && canShow) {
-            GameplayStatsRow(tsInfo.name, formatTimestampGameplayStat(tsInfo.time), tsInfo.color);
+    // ImGui consumes each row immediately. A second 8191-entry display array
+    // reserved 512 KiB on 3DS even with this window closed, and its fixed names
+    // could overflow. Keep the saved history and format only the current row.
+    for (u32 i = 0; i < gSaveContext.ship.stats.tsIdx &&
+                    i < ARRAY_COUNT(gSaveContext.ship.stats.sceneTimestamps); i++) {
+        const auto& timestamp = gSaveContext.ship.stats.sceneTimestamps[i];
+        const u32 time = roomBreakdown ? timestamp.roomTime : timestamp.sceneTime;
+        if (time == 0 || (timestamp.isRoom && !roomBreakdown)) {
+            continue;
+        }
+        std::string name = ResolveSceneID(timestamp.scene, timestamp.room);
+        if (roomBreakdown && timestamp.scene != SCENE_GROTTOS) {
+            name = spdlog::fmt_lib::format("{:s} Room {:d}", name, timestamp.room);
+        }
+        if (name.size() > 1) {
+            GameplayStatsRow(name.c_str(), formatTimestampGameplayStat(time), COLOR_GREY);
         }
     }
     std::string toPass;
-    if (CVarGetInteger(CVAR_GAMEPLAY_STATS("RoomBreakdown"), 0) && gSaveContext.ship.stats.sceneNum != SCENE_GROTTOS) {
+    if (roomBreakdown && gSaveContext.ship.stats.sceneNum != SCENE_GROTTOS) {
         toPass = spdlog::fmt_lib::format(
             "{:s} Room {:d}", ResolveSceneID(gSaveContext.ship.stats.sceneNum, gSaveContext.ship.stats.roomNum),
             gSaveContext.ship.stats.roomNum);

@@ -2938,12 +2938,12 @@ void SaveManager::ConvertFromUnversioned() {
             (file->newf[4] == 'A') && (file->newf[5] == 'Z')) {
             // If a save is valid, convert the save by storing the current save context, converting the file, loading
             // it, saving it, then restoring the save context.
-            static SaveContext saveContextSave = gSaveContext;
+            auto saveContextSave = std::make_unique<SaveContext>(gSaveContext);
             InitFile(false);
             CopyV0Save(*file, gSaveContext);
             SaveSection(fileNum, SECTION_ID_BASE, false);
             InitMeta(fileNum);
-            gSaveContext = saveContextSave;
+            gSaveContext = *saveContextSave;
         }
     }
 

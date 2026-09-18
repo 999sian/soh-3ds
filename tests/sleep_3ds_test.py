@@ -20,6 +20,8 @@ with tempfile.TemporaryDirectory(prefix='soh-sleep-') as temporary:
 #include <chrono>
 std::mutex sBufferLock;
 bool sInitialized = false;
+struct Soh3dsDspAudioBackendApi;
+const Soh3dsDspAudioBackendApi* sDspBackend = nullptr;
 void LightLock_Lock(std::mutex* lock) { lock->lock(); }
 void LightLock_Unlock(std::mutex* lock) { lock->unlock(); }
 ''' + gate + '''

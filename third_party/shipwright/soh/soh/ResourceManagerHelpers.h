@@ -34,6 +34,9 @@ uint32_t ResourceMgr_GetGamePlatform(int index);
 uint32_t ResourceMgr_GetGameRegion(int index);
 bool ResourceMgr_IsPalLoaded();
 void ResourceMgr_LoadDirectory(const char* resName);
+#ifdef __3DS__
+void ResourceMgr_PrefetchRoom3DS(const char* roomPath);
+#endif
 void ResourceMgr_UnloadResource(const char* resName);
 char** ResourceMgr_ListFiles(const char* searchMask, int* resultSize);
 uint8_t ResourceMgr_FileExists(const char* resName);
@@ -58,6 +61,7 @@ char* ResourceMgr_LoadArrayByNameAsVec3s(const char* path);
 Vtx* ResourceMgr_LoadVtxByCRC(uint64_t crc);
 Vtx* ResourceMgr_LoadVtxByName(char* path);
 SoundFont* ResourceMgr_LoadAudioSoundFontByName(const char* path);
+int ResourceMgr_GetAudioSoundFontIndex(const char* path);
 SequenceData ResourceMgr_LoadSeqByName(const char* path);
 SequenceData* ResourceMgr_LoadSeqPtrByName(const char* path);
 SoundFontSample* ResourceMgr_LoadAudioSample(const char* path);

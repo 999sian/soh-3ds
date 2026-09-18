@@ -22,8 +22,13 @@
 #include <unwind.h>
 #include <malloc.h>
 #include <cstdio>
+#include "model_profile_3ds.h"
 
 extern "C" {
+
+static bool sUsesOldProfile = true;
+bool gSoh3dsFrameInterpolationEnabled = false;
+bool Soh3dsUsesOldProfile() { return sUsesOldProfile; }
 
 // Default is 32 KB, which SoH overflows before main() is even reached: the
 // enhancement layer's static initialisers (CosmeticsEditor.cpp builds large
@@ -44,31 +49,13 @@ u32 __stacksize__ = 1 * 1024 * 1024;
 // texture upload failed (287 dropped frames, invisible text boxes, flat room
 // backgrounds). 16 MB doubles the texture headroom; the interpreter also evicts
 // under linear pressure now, so this is margin, not the only guard.
-u32 __ctru_linear_heap_size = 16 * 1024 * 1024;
+u32 __ctru_linear_heap_size = 9 * 1024 * 1024;
 
-// Everything else: the resource manager's 39k-entry index, the loaded scene
-// graph, SoH's own N64 heaps (Heaps_Alloc), and the C++ runtime. New 3DS gives
-// an APPLICATION region of 96 MB, and the binary itself is ~35 MB of that.
-// Measured, not guessed: with a 36 MB heap the randomizer's hint tables ran out
-// of memory. mallinfo at that point read used=30489 KiB, free=4846 KiB - so
-// ~30 MB is already committed by the 39k-entry archive index, the resource
-// manager and SoH's own tables before the hint tables are built at all.
-//
-// APPLICATION region on New 3DS is 96 MB and the binary is ~35 MB resident, so
-// 48 heap + 12 linear + 1 stack = 61 MB is the space actually available.
-// Building with -Os cut the resident binary from 34.7 MB to 21.2 MB, so there is
-// now room to give the heap what SoH actually wants. 96 MB region - 21.2 MB
-// binary leaves ~75 MB; 56 heap + 12 linear + 1 stack = 69 MB keeps a margin for
-// the loader and thread stacks.
+// Ordinary resources, N64 arenas, thread stacks, and the C++ runtime use this
+// heap. The initial value is replaced before allocation using the kernel's
+// actual application commit budget and free virtual address interval.
 u32 __ctru_heap_size = 66 * 1024 * 1024;
 
-// The fixed 66 MB request is sized to New 3DS's 96 MB APPLICATION region. On
-// Old 3DS (64 MB region, most of it eaten by the ~21 MB binary) libctru's
-// stock __system_allocateHeaps svcBreak-panics before main() - an
-// undiagnosable black screen, the same wall MK64-3DS's O3DS users hit.
-// Override it: same allocation mechanics, but clamp to what the kernel
-// actually granted and record the outcome so the early-init constructor can
-// show a legible "New 3DS required" screen instead.
 extern char* fake_heap_start;
 extern char* fake_heap_end;
 extern u32 __ctru_heap;
@@ -86,6 +73,7 @@ void __system_allocateHeaps(void) {
     svcGetResourceLimitCurrentValues(&currentCommit, reslimit, &reslimitType, 1);
     svcCloseHandle(reslimit);
 
+    __ctru_linear_heap_size = Soh3dsLinearHeapBytes(maxCommit);
     u32 remaining = (u32)(maxCommit - currentCommit) & ~0xFFF;
 
     // Take what the console ACTUALLY grants, in both directions.
@@ -114,6 +102,17 @@ void __system_allocateHeaps(void) {
     // memory.
     const u32 margin = 2 * 1024 * 1024;
     u32 usable = remaining > (__ctru_linear_heap_size + margin) ? remaining - __ctru_linear_heap_size - margin : 0;
+    // A larger New 3DS grant can exceed the free virtual heap interval.
+    // Respect its next mapping (notably the main stack) as well as commit.
+    MemInfo heapRegion{};
+    PageInfo heapPage{};
+    if (R_FAILED(svcQueryMemory(&heapRegion, &heapPage, OS_HEAP_AREA_BEGIN)) ||
+        heapRegion.state != MEMSTATE_FREE) {
+        svcBreak(USERBREAK_PANIC);
+    }
+    const uint64_t virtualBytes = static_cast<uint64_t>(heapRegion.base_addr) +
+                                  heapRegion.size - OS_HEAP_AREA_BEGIN;
+    if (usable > virtualBytes) usable = static_cast<u32>(virtualBytes);
     usable &= ~0xFFF;
     if (usable != 0) {
         __ctru_heap_size = usable;
@@ -154,6 +153,27 @@ int __wrap___syscall_thread_create(struct __pthread_t** thread, void* (*func)(vo
     }
     return __real___syscall_thread_create(thread, func, arg, stack_addr, stack_size);
 }
+
+// Record the SIZE of the request that is about to fail. std::new_handler runs
+// with the stack intact but receives no size, and mallinfo cannot report it, so
+// the one distinguishing fact is missing from the alloc-fail record: a small
+// request failing while fordblks holds megabytes across ~50k ordblks is
+// fragmentation, whereas a large request failing is the arena ceiling. The two
+// call for opposite fixes, so the size decides which lever is real.
+// A single relaxed store per malloc; no allocation, no lock, safe pre-init.
+extern "C" void* __real_malloc(size_t size);
+static std::atomic<size_t> sLastMallocRequest{0};
+
+
+
+
+
+
+extern "C" void* __wrap_malloc(size_t size) {
+    sLastMallocRequest.store(size, std::memory_order_relaxed);
+    return __real_malloc(size);
+}
+
 
 // Direct threadCreate callers bypass the pthread wrap above. The thinnest is
 // libctru's own NDSP worker: 4 KiB stack, and its Thread_tag + stack + TLS
@@ -284,6 +304,10 @@ static _Unwind_Reason_Code SohCtrTraceFrameToMarker(struct _Unwind_Context* ctx,
 // 65535/default), so this is in place before the enhancement layer's
 // load-time tables are built and before spdlog's first message.
 __attribute__((constructor(101))) static void SohCtrEarlyLogInit() {
+    bool isNewModel = false;
+    const bool modelKnown = R_SUCCEEDED(APT_CheckNew3DS(&isNewModel));
+    sUsesOldProfile = Soh3dsUseOldProfile(modelKnown, isNewModel);
+    gSoh3dsFrameInterpolationEnabled = !sUsesOldProfile;
     Soh3dsConfigureDebugOutput();
     devoptab_list[STD_OUT] = devoptab_list[STD_ERR];
     // Unbuffered: a crash must not swallow the lines leading up to it.
@@ -322,19 +346,20 @@ __attribute__((constructor(101))) static void SohCtrEarlyLogInit() {
     }
 
     // Old 3DS (or a stingy exheader): __system_allocateHeaps clamped the heap.
-    // Below ~40 MB SoH cannot even finish boot (30 MB is committed by the
-    // archive index and tables alone, measured), so dying later in a random
-    // allocation would be misleading. Say why, on-screen, and leave.
-    constexpr u32 kViableHeapFloor = 40 * 1024 * 1024;
+    // The reduced archive index and synchronous logging fit startup below
+    // 32 MiB; retain a floor for standard-memory launches. Gameplay headroom
+    // is validated separately in the 80 MiB compatibility package.
+    constexpr u32 kViableHeapFloor = 32 * 1024 * 1024;
     if (sGrantedHeapSize < kViableHeapFloor) {
-        fprintf(stderr, "soh-3ds: FATAL: only %u MiB heap granted (need >= %u). New 3DS required.\n",
+        fprintf(stderr, "soh-3ds: FATAL: only %u MiB heap granted (need >= %u). Extended-memory CIA launch required.\n",
                 (unsigned)(sGrantedHeapSize / (1024 * 1024)), (unsigned)(kViableHeapFloor / (1024 * 1024)));
         gfxInitDefault();
         consoleInit(GFX_TOP, nullptr);
         printf("\n\n  Ship of Harkinian 3DS\n  ---------------------\n\n"
                "  This system granted only %u MiB of memory.\n"
-               "  A New 3DS / New 2DS (with its extra RAM)\n  is required.\n\n"
-               "  If this IS a New 3DS, launch via a title\n  with a New-3DS exheader (install the CIA).\n",
+               "  Install and launch the compatibility CIA\n"
+               "  to enable extended memory on Old 3DS.\n\n"
+               "  Use CIA installation on New 3DS too.\n",
                (unsigned)(sGrantedHeapSize / (1024 * 1024)));
         gfxFlushBuffers();
         gfxSwapBuffers();
@@ -345,6 +370,9 @@ __attribute__((constructor(101))) static void SohCtrEarlyLogInit() {
     fprintf(stderr, "soh-3ds: early log init, stack %u KiB, linear %u MiB, heap %u MiB (granted %u MiB)\n",
             (unsigned)(__stacksize__ / 1024), (unsigned)(__ctru_linear_heap_size / (1024 * 1024)),
             (unsigned)(__ctru_heap_size / (1024 * 1024)), (unsigned)(sGrantedHeapSize / (1024 * 1024)));
+
+    fprintf(stderr, "soh-3ds: hardware profile=%s (APT query %s)\n",
+            sUsesOldProfile ? "Old 3DS" : "New 3DS", modelKnown ? "ok" : "failed");
 
     // Memory-map ground truth: repeated hardware dumps fault at addresses the
     // emulator map says are mapped. Walk the address space once and PERSIST it
@@ -412,8 +440,9 @@ __attribute__((constructor(101))) static void SohCtrEarlyLogInit() {
         // arena limit. mallinfo() walks existing structures and allocates
         // nothing, so it is safe on this path.
         struct mallinfo mi = mallinfo();
-        char detail[176];
-        snprintf(detail, sizeof(detail), "uordblks=%u fordblks=%u ordblks=%u keepcost=%u arena=%u",
+        char detail[208];
+        snprintf(detail, sizeof(detail), "req=%u uordblks=%u fordblks=%u ordblks=%u keepcost=%u arena=%u",
+                 (unsigned)sLastMallocRequest.load(std::memory_order_relaxed),
                  (unsigned)mi.uordblks, (unsigned)mi.fordblks, (unsigned)mi.ordblks, (unsigned)mi.keepcost,
                  (unsigned)mi.arena);
         SohCtrFatalMark("alloc-fail", detail);
@@ -514,6 +543,9 @@ void Soh3dsBootConsoleReady(void) {
         // emulator log. stdout stays on the console for the boot text.
         Soh3dsConfigureDebugOutput();
         setvbuf(stderr, nullptr, _IONBF, 0);
+        fprintf(stderr, "soh-3ds boot profile=%s heap=%uKiB linear=%uKiB\n",
+                Soh3dsUsesOldProfile() ? "Old" : "New",
+                (unsigned)(__ctru_heap_size / 1024), (unsigned)(__ctru_linear_heap_size / 1024));
         sBootConsoleUp = true;
         printf("Ship of Harkinian 3DS\n---------------------\nStarting game...\n");
     }
@@ -521,6 +553,12 @@ void Soh3dsBootConsoleReady(void) {
 
 void Soh3dsBootStatus(const char* msg) {
     fprintf(stderr, "soh-3ds init: %s\n", msg);
+    if (Soh3dsLoggingEnabled(SOH3DS_LOG_GENERAL)) {
+        const auto memory = mallinfo();
+        fprintf(stderr, "soh-3ds init memory: used=%uKiB free=%uKiB arena=%uKiB at %s\n",
+                (unsigned)(memory.uordblks / 1024), (unsigned)(memory.fordblks / 1024),
+                (unsigned)(memory.arena / 1024), msg);
+    }
     if (sBootConsoleUp && Soh3dsLoggingEnabled(SOH3DS_LOG_GENERAL)) {
         printf("%s\n", msg);
         gfxFlushBuffers();

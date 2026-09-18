@@ -5,6 +5,7 @@
 #include <unordered_map>
 #include <set>
 #include "imconfig.h"
+#include "gfx_compact_vertex.h"
 
 namespace Fast {
 struct ShaderProgram;
@@ -49,6 +50,12 @@ class GfxRenderingAPI {
     virtual void SetScissor(int x, int y, int width, int height) = 0;
     virtual void SetUseAlpha(bool useAlpha) = 0;
     virtual void DrawTriangles(float buf_vbo[], size_t buf_vbo_len, size_t buf_vbo_num_tris) = 0;
+    // Portable backends keep the original stream unless they explicitly opt in.
+    virtual bool SupportsCompactVertexStream() const { return false; }
+    virtual void DrawCompactTriangles(float storage[], size_t numTris, const CompactVertexLayout& layout) {
+        ExpandCompactVerticesInPlace(storage, numTris * 3, layout);
+        DrawTriangles(storage, numTris * 3 * layout.StrideFloats(), numTris);
+    }
     virtual void Init() = 0;
     virtual void OnResize() = 0;
     virtual void StartFrame() = 0;

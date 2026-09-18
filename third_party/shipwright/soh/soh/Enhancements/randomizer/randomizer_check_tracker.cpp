@@ -7,6 +7,10 @@
 #include <vector>
 #include <set>
 
+#ifdef __3DS__
+extern "C" bool Soh3dsUsesOldProfile();
+#endif
+
 #include <spdlog/common.h>
 #include <libultraship/controller/controldeck/ControlDeck.h>
 
@@ -763,6 +767,25 @@ void CheckTrackerHintRevealed(RandomizerHint hintKey) {
     }
 }
 
+static bool trackerLogicPending = false;
+
+static void EnsureTrackerLogic() {
+    if (!trackerLogicPending) return;
+    RegionTable_Init();
+    Rando::Context::GetInstance()->GetEntranceShuffler()->ApplyEntranceOverrides();
+    trackerLogicPending = false;
+}
+
+static void PrepareTrackerLogic() {
+    trackerLogicPending = true;
+#ifdef __3DS__
+    // Ordinary gameplay does not use the tracker reachability graph. On Old
+    // hardware, allocate it only when a tracker logic feature actually needs it.
+    if (Soh3dsUsesOldProfile() && !IS_RANDO) return;
+#endif
+    EnsureTrackerLogic();
+}
+
 void CheckTrackerLoadGame(int32_t fileNum) {
     if (IS_BOSS_RUSH) {
         return;
@@ -854,9 +877,7 @@ void CheckTrackerLoadGame(int32_t fileNum) {
     UpdateInventoryChecks();
     UpdateFilters();
 
-    RegionTable_Init();
-
-    Rando::Context::GetInstance()->GetEntranceShuffler()->ApplyEntranceOverrides();
+    PrepareTrackerLogic();
 
     recalculateAvailable = true;
 }
@@ -1208,6 +1229,7 @@ void LoadFile() {
 
 void Teardown() {
     initialized = false;
+    trackerLogicPending = false;
     ClearAreaChecksAndTotals();
     checksByArea.clear();
     areasSpoiled = 0;
@@ -1312,6 +1334,7 @@ void CheckTrackerWindow::DrawElement() {
             return;
         }
 
+        if (showLogicTooltip) EnsureTrackerLogic();
         if (recalculateAvailable) {
             recalculateAvailable = false;
             InternalRecalculateAvailableChecks(availableChecksStartingRegion, availableChecksStartingAgeTime);
@@ -2432,6 +2455,8 @@ void InternalRecalculateAvailableChecks(RandomizerRegion startingRegion, RandoAg
     if (!enableAvailableChecks || !GameInteractor::IsSaveLoaded()) {
         return;
     }
+
+    EnsureTrackerLogic();
 
     ResetPerformanceTimer(PT_RECALCULATE_AVAILABLE_CHECKS);
     StartPerformanceTimer(PT_RECALCULATE_AVAILABLE_CHECKS);

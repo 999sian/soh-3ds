@@ -62,6 +62,7 @@ void draw() {for(int u=0;u<3;++u) if(dirty[u]) {hardwareFilter[u]=bound[u]->filt
 struct C3D_RenderTarget { struct {uint32_t width=8,height=8;void* depthBuf=nullptr;int depthFmt=1;} frameBuf;};
 constexpr int GPU_RB_DEPTH24_STENCIL8=1;
 void GSPGPU_InvalidateDataCache(const void*,size_t) {}
+bool Soh3dsInvalidateDataCache(const void*,size_t) { return true; }
 size_t MortonOffset8x8(uint32_t x,uint32_t y) {size_t v=0;for(unsigned i=0;i<3;i++)v|=((x>>i)&1)<<(2*i)|((y>>i)&1)<<(2*i+1);return v;}
 constexpr uint32_t kTopLogicalWidth=400,kTopHeight=240;
 struct hash_pair_ff {size_t operator()(const std::pair<float,float>& p)const{return std::hash<float>{}(p.first)^std::hash<float>{}(p.second);}};

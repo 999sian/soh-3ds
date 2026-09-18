@@ -150,7 +150,8 @@ bool OotrsArchive::Open() {
     std::unordered_map<std::string, std::string> seqEntries;
     std::unordered_map<std::string, std::string> metaEntries;
 
-    for (const auto& [hash, name] : *mZip->ListFiles()) {
+    const auto zipFiles = mZip->ListFiles();
+    for (const auto& [hash, name] : *zipFiles) {
         if (HasExtension(name, ".zbank") || HasExtension(name, ".bankmeta")) {
             mHasCustomBank = true;
         } else if (HasExtension(name, ".seq")) {

@@ -30,7 +30,6 @@ Vtx* ResourceMgr_LoadVtxByName(char* path);
 CollisionHeader* ResourceMgr_LoadColByName(char* path);
 uint64_t GetPerfCounter();
 int ResourceMgr_OTRSigCheck(char* imgData);
-void ResourceMgr_PushCurrentDirectory(char* path);
 }
 
 extern "C" void gSPSegment(void* value, int segNum, uintptr_t target) {
@@ -71,7 +70,6 @@ extern "C" void gSPDisplayList(Gfx* pkt, Gfx* dl) {
 
     if (ResourceMgr_OTRSigCheck(imgData) == 1) {
 
-        // ResourceMgr_PushCurrentDirectory(imgData);
         // gsSPPushCD(pkt++, imgData);
         dl = ResourceMgr_LoadGfxByName(imgData);
     }

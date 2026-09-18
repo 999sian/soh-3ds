@@ -6,17 +6,22 @@ import tempfile
 
 root = Path(__file__).resolve().parents[1]
 source = (root / 'platform/3ds/source/gfx_citro3d.cpp').read_text()
-start = source.index('static FILE* Soh3dsOpenPerformanceLog()')
+# The log controller resets production counters when detail mode changes.
+start = source.index('struct Soh3dsProfileCounter {')
 helpers = source[start:source.index('// Frame pacing state', start)]
 gate = re.search(r'    if \(\+\+sFrames % 60 == 0[^\n]*', source).group(0)
 code = r'''
+#include <array>
 #include <cassert>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
-static bool sRenderProfileEnabled = false;
+#include "fast/backends/gfx_profile_3ds.h"
+#include "fast/backends/game_profile_3ds.h"
 #include "ship/utils/logging_3ds.h"
 unsigned testLoggingFlags = 0;
 extern "C" unsigned Soh3dsLoggingFlags() { return testLoggingFlags; }
+uint64_t svcGetSystemTick() { assert(false && "heartbeat must not sample profiling clocks"); return 1; }
 ''' + helpers + r'''
 int main(int argc, char** argv) {
     assert(argc == 3);

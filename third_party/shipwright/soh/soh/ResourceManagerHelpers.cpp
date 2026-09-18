@@ -6,6 +6,18 @@
 #include <ship/Context.h>
 #include <ship/resource/ResourceManager.h>
 #include <stb_image.h>
+#ifdef __3DS__
+#include "audio_font_metadata_3ds.h"
+#include <ship/resource/archive/O2rArchive.h>
+#include <ship/resource/archive/RoomPrefetchPolicy3DS.h>
+#include <malloc.h>
+#include <cstring>
+#include <string_view>
+// libctru's envGetHeapSize is inline; read the same exported reservation here
+// without pulling libctru's full type/macro namespace into the game headers.
+extern "C" uint32_t __ctru_heap_size;
+extern "C" bool Soh3dsUsesOldProfile();
+#endif
 
 #include "ResourceManagerHelpers.h"
 #include "OTRGlobals.h"
@@ -209,6 +221,39 @@ extern "C" void ResourceMgr_LoadDirectory(const char* resName) {
     Ship::Context::GetRawInstance()->GetResourceManager()->LoadResources(resName);
 }
 
+#ifdef __3DS__
+extern "C" void ResourceMgr_PrefetchRoom3DS(const char* roomPath) {
+    const auto manager = Ship::Context::GetRawInstance()->GetResourceManager();
+    const auto archives = manager->GetArchiveManager()->GetArchives();
+    // Drop the previous room before measuring headroom. Archive locks serialize
+    // these operations with the existing resource-loading worker.
+    for (const auto& archive : *archives) {
+        if (auto zip = std::dynamic_pointer_cast<Ship::O2rArchive>(archive)) zip->PrefetchRoom("", 0);
+    }
+    try {
+        if (!roomPath) return;
+        const auto prefix = Ship::RoomPrefix3DS(roomPath, ResourceMgr_IsGameMasterQuest());
+        if (prefix.empty()) return;
+        const auto heap = mallinfo();
+        const size_t capacity = __ctru_heap_size;
+        const size_t used = static_cast<size_t>(heap.uordblks);
+        size_t remaining = Ship::RoomPrefetchBudget3DS(capacity > used ? capacity - used : 0,
+            Soh3dsUsesOldProfile(), manager->GetCachedResource(prefix) != nullptr);
+        // One budget across all mounted archives. Mods get priority; reads
+        // still use ArchiveManager's normal override and alternate-asset rules.
+        for (auto it = archives->rbegin(); it != archives->rend() && remaining > 0; ++it) {
+            if (auto zip = std::dynamic_pointer_cast<Ship::O2rArchive>(*it)) {
+                remaining -= zip->PrefetchRoom(prefix, remaining);
+            }
+        }
+    } catch (const std::bad_alloc&) {
+        for (const auto& archive : *archives) {
+            if (auto zip = std::dynamic_pointer_cast<Ship::O2rArchive>(archive)) zip->PrefetchRoom("", 0);
+        }
+    }
+}
+#endif
+
 extern "C" void ResourceMgr_DirtyDirectory(const char* resName) {
     Ship::Context::GetRawInstance()->GetResourceManager()->DirtyResources(resName);
 }
@@ -273,14 +318,37 @@ extern "C" void ResourceMgr_UnloadOriginalWhenAltExists(const char* resName) {
 }
 
 std::shared_ptr<Ship::IResource> ResourceMgr_GetResourceByNameHandlingMQ(const char* path) {
-    std::string Path = path;
+    // SoH-3DS: this is the by-name lookup the game runs per display list per frame (Link's limb
+    // DLs, chests, GbiWrap) and it nearly always hits the cache, so the hit path must not
+    // allocate. Probe with a view first; only a miss builds the owning string, and the MQ
+    // rewrite uses a stack buffer so it stays allocation-free too.
+    // Context owns the manager for the whole run; take the raw pointer so the hit path
+    // does not do shared_ptr refcount traffic per lookup either.
+    auto* resourceManager = Ship::Context::GetRawInstance()->GetResourceManager().get();
+    const size_t length = std::strlen(path);
+    std::string_view view(path, length);
+    char rewritten[256];
     if (ResourceMgr_IsGameMasterQuest()) {
-        size_t pos = 0;
-        if ((pos = Path.find("/nonmq/", 0)) != std::string::npos) {
-            Path.replace(pos, 7, "/mq/");
+        const size_t position = view.find("/nonmq/");
+        if (position != std::string_view::npos) {
+            if (length - 3 < sizeof(rewritten)) {
+                // "/nonmq/" -> "/mq/": shrinks by 3, so the tail moves down.
+                std::memcpy(rewritten, path, position);
+                std::memcpy(rewritten + position, "/mq/", 4);
+                const size_t tail = length - position - 7;
+                std::memcpy(rewritten + position + 4, path + position + 7, tail);
+                view = std::string_view(rewritten, position + 4 + tail);
+            } else {
+                std::string resolvedPath(path);
+                resolvedPath.replace(position, 7, "/mq/");
+                return resourceManager->LoadResource(std::move(resolvedPath));
+            }
         }
     }
-    return Ship::Context::GetRawInstance()->GetResourceManager()->LoadResource(Path.c_str());
+    if (auto cached = resourceManager->GetCachedResource(view)) {
+        return cached;
+    }
+    return resourceManager->LoadResource(std::string(view));
 }
 
 extern "C" char* ResourceMgr_GetResourceDataByNameHandlingMQ(const char* path) {
@@ -317,42 +385,32 @@ extern "C" uint8_t ResourceMgr_ResourceIsBackground(char* texPath) {
     return res->GetInitData()->Type == static_cast<uint32_t>(SOH::ResourceType::SOH_Background);
 }
 
+// Returns an owned buffer; the caller releases it after copying the RGBA16 image.
 extern "C" char* ResourceMgr_LoadJPEG(char* data, size_t dataSize) {
-    static char* finalBuffer = 0;
-
-    if (finalBuffer == 0) {
-        finalBuffer = (char*)malloc(dataSize);
+    if (data == nullptr || dataSize == 0 || dataSize > 0x7fffffff) return nullptr;
+    int w = 0, h = 0, comp = 0;
+    // JPEG has no alpha. Convert RGB to RGBA16 in place to avoid a second
+    // image allocation and the old permanently retained conversion buffer.
+    unsigned char* pixels = stbi_load_from_memory(
+        reinterpret_cast<const unsigned char*>(data), static_cast<int>(dataSize), &w, &h, &comp, STBI_rgb);
+    if (pixels == nullptr) {
+        fprintf(stderr, "resource: JPEG decode failed: %s\n", stbi_failure_reason());
+        return nullptr;
     }
-
-    int w;
-    int h;
-    int comp;
-
-    unsigned char* pixels =
-        stbi_load_from_memory((const unsigned char*)data, 320 * 240 * 2, &w, &h, &comp, STBI_rgb_alpha);
-    // unsigned char* pixels = stbi_load_from_memory((const unsigned char*)data, 480 * 240 * 2, &w, &h, &comp,
-    // STBI_rgb_alpha);
-    int idx = 0;
-
-    for (int y = 0; y < h; y++) {
-        for (int x = 0; x < w; x++) {
-            uint16_t* bufferTest = (uint16_t*)finalBuffer;
-            int pixelIdx = ((y * w) + x) * 4;
-
-            uint8_t r = pixels[pixelIdx + 0] / 8;
-            uint8_t g = pixels[pixelIdx + 1] / 8;
-            uint8_t b = pixels[pixelIdx + 2] / 8;
-
-            uint8_t alphaBit = pixels[pixelIdx + 3] != 0;
-
-            uint16_t data = (r << 11) + (g << 6) + (b << 1) + alphaBit;
-
-            finalBuffer[idx++] = (data & 0xFF00) >> 8;
-            finalBuffer[idx++] = (data & 0x00FF);
-        }
+    if (w <= 0 || h <= 0 || static_cast<size_t>(w) > dataSize / 2 / static_cast<size_t>(h) ||
+        static_cast<size_t>(w) * h * 2 != dataSize) {
+        stbi_image_free(pixels);
+        return nullptr;
     }
-
-    return (char*)finalBuffer;
+    const size_t count = static_cast<size_t>(w) * h;
+    for (size_t i = 0; i < count; ++i) {
+        const uint16_t pixel = ((pixels[i * 3] >> 3) << 11) |
+                               ((pixels[i * 3 + 1] >> 3) << 6) |
+                               ((pixels[i * 3 + 2] >> 3) << 1) | 1;
+        pixels[i * 2] = pixel >> 8;
+        pixels[i * 2 + 1] = pixel & 0xff;
+    }
+    return reinterpret_cast<char*>(pixels);
 }
 
 extern "C" char* ResourceMgr_LoadTexOrDListByName(const char* filePath) {
@@ -383,10 +441,6 @@ extern "C" char* ResourceMgr_LoadPlayerAnimByName(const char* animPath) {
     auto anim = std::static_pointer_cast<SOH::PlayerAnimation>(ResourceMgr_GetResourceByNameHandlingMQ(animPath));
 
     return (char*)&anim->limbRotData[0];
-}
-
-extern "C" void ResourceMgr_PushCurrentDirectory(char* path) {
-    Fast::gfx_push_current_dir(path);
 }
 
 extern "C" Gfx* ResourceMgr_LoadGfxByName(const char* path) {
@@ -598,6 +652,27 @@ extern "C" SoundFont* ResourceMgr_LoadAudioSoundFontByName(const char* path) {
         return nullptr;
     }
     return (SoundFont*)ResourceGetDataByName(path);
+}
+
+extern "C" int ResourceMgr_GetAudioSoundFontIndex(const char* path) {
+    if (path == nullptr) return -1;
+#ifdef __3DS__
+    if (Soh3dsUsesOldProfile()) {
+        const auto manager = Ship::Context::GetRawInstance()->GetResourceManager();
+        // Aliases, alternate assets and nonstandard formats keep the normal
+        // importer. For standard fonts, indexing need not load their samples.
+        if (!manager->IsAltAssetsEnabled() && !manager->GetArchiveManager()->HasFile(std::string(path) + ".meta")) {
+            const auto file = manager->LoadFileProcess(path);
+            if (file && file->Buffer) {
+                const int index = Soh3dsReadFontIndex(reinterpret_cast<const uint8_t*>(file->Buffer->data()),
+                                                      file->Buffer->size());
+                if (index >= 0) return index;
+            }
+        }
+    }
+#endif
+    const SoundFont* font = ResourceMgr_LoadAudioSoundFontByName(path);
+    return font ? font->fntIndex : -1;
 }
 
 extern "C" int ResourceMgr_OTRSigCheck(char* imgData) {

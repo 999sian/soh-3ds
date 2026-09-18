@@ -43,9 +43,13 @@ cpp = r'''
 #include <cassert>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
+#include "fast/backends/gfx_compact_vertex.h"
+using namespace Fast;
 #include <cstdio>
 #include <memory>
 #include <vector>
+#include "compiled_channel_3ds.h"
 #include "fast/backends/gfx_profile_3ds.h"
 struct DepthSnapshot3DS {};
 struct C3D_Tex { uint16_t width=0,height=0; };
@@ -58,7 +62,7 @@ void C3D_TexSetWrap(C3D_Tex*,int,int) {}
 C3D_RenderTarget* C3D_RenderTargetCreateFromTex(C3D_Tex*,int,int,int) {static C3D_RenderTarget target;return &target;}
 size_t vramSpaceFree() {return 1024*1024;}
 uint16_t NextPowerOfTwo(uint16_t value) {uint16_t n=8;while(n<value)n*=2;return n;}
-''' + program + packed_vertex + block('uint8_t FloatColorToByte(') + '\n' + pack_helpers + r'''
+''' + program + packed_vertex + block('uint8_t FloatColorToByte(') + '\n' + block('void PackCompactVertices(') + '\n' + pack_helpers + r'''
 struct TextureSlot {bool initialized=false;uint16_t sourceWidth=0,sourceHeight=0;C3D_Tex texture;};
 ''' + slot + r'''
 struct State {
@@ -75,11 +79,21 @@ struct GfxRenderingAPICitro3D {
  State state;State* mImpl=&state;
  bool EnsureFramebufferStorage(int,uint16_t,uint16_t,bool,bool);
  void ReleaseFramebufferStorage(int id) {auto& slot=*state.framebuffers[id];slot.initialized=false;slot.target=nullptr;}
- void Pack(const float* drawVertices,bool singleInput=false) {
+ void Pack(const float* drawVertices,bool singleInput=false,bool compact=false) {
   ShaderProgram p;p.usedTextures[0]=p.usedTextures[1]=true;p.textureOffsets[0]=4;p.textureOffsets[1]=6;
   p.numInputs=singleInput?1:0;p.inputOffsets[0]=8;p.strideFloats=singleInput?11:8;
   ShaderProgram* program=&p;const size_t vertexCount=1,firstVertex=0;const float coverScale=1;
   const int varyingInput=singleInput?0:-1;
+  float compactStorage[sizeof(CompactVertex)/sizeof(float)];
+  CompactVertexLayout descriptor{1,uint8_t(singleInput?1:0),3,false,false};
+  const CompactVertexLayout* compactLayout=nullptr;
+  const float* bufVbo=drawVertices;
+  if(compact) {
+   CompactVertex record{};std::memcpy(record.position,drawVertices,4*sizeof(float));
+   std::memcpy(record.texcoord,drawVertices+4,4*sizeof(float));
+   if(singleInput)for(unsigned c=0;c<3;c++)record.input[0][c]=FloatColorToByte(drawVertices[8+c]);
+   WriteCompactVertex(compactStorage,0,record);bufVbo=compactStorage;compactLayout=&descriptor;
+  }
 ''' + packing + r'''
  }
 };
@@ -111,9 +125,9 @@ int main() {
    assert(renderer.state.framebuffers[id]->texture.width==256);
    assert(renderer.state.framebuffers[id]->texture.height==512);
   }
-  for(const auto& pos : coordinates) {
+  for(const auto& pos : coordinates) for(bool compact : {false,true}) {
    float u=(pos[0]+0.5f)/400,v=(pos[1]+0.5f)/240;
-   const float vertex[]={0,0,0,1,u,v,u,v};renderer.Pack(vertex);
+   const float vertex[]={0,0,0,1,u,v,u,v};renderer.Pack(vertex,false,compact);
    auto& packed=renderer.state.packedVertices[0];
    for(const float* uv : {packed.texcoord0,packed.texcoord1}) {
     uint32_t expected=1+pos[1]*400+pos[0];uint32_t got=sample(image,uv);
@@ -125,9 +139,9 @@ int main() {
   }
  }
  // A POT viewport has no leading padding: draw and copy must agree.
- for(bool rendered : {false,true}) {
+ for(bool rendered : {false,true}) for(bool compact : {false,true}) {
   assert(renderer.EnsureFramebufferStorage(1,512,256,true,rendered));
-  const float vertex[]={0,0,0,1,0.25f,0.75f,0.25f,0.75f};renderer.Pack(vertex);
+  const float vertex[]={0,0,0,1,0.25f,0.75f,0.25f,0.75f};renderer.Pack(vertex,false,compact);
   auto& p=renderer.state.packedVertices[0];
   assert(p.texcoord0[0]==0.25f && p.texcoord0[1]==0.75f);
  }
@@ -144,7 +158,14 @@ int main() {
  assert(p.texcoord1[0]==160.0f/512 && p.texcoord1[1]==45.0f/256);
  assert(p.position[0]==2 && p.position[1]==-3 && p.position[2]==0 && p.position[3]==1);
  assert(p.color[0]==0 && p.color[1]==128 && p.color[2]==255 && p.color[3]==255);
- std::printf("framebuffer sampling: asymmetric portrait pixels, both units, copy/draw reuse, POT and common packing pass (switch=%d)\n",
+ // Byte-valued colours reach the same actual scale derivation on compact draws.
+ const float compactColored[]={2,-3,0,1,0.25f,0.75f,0.5f,0.25f,0,128*(1.0f/255.0f),1};
+ renderer.Pack(compactColored,true);const PackedVertex expected=p;
+ renderer.Pack(compactColored,true,true);
+ assert(std::memcmp(&expected,&p,sizeof(PackedVertex))==0);
+ assert(p.texcoord0[0]==100.0f/512 && p.texcoord0[1]==180.0f/256);
+ assert(p.texcoord1[0]==160.0f/512 && p.texcoord1[1]==45.0f/256);
+ std::printf("framebuffer sampling: asymmetric portrait pixels, both units, copy/draw reuse, POT, float and compact packing pass (switch=%d)\n",
              SOH3DS_EXPERIMENT_COMMON_PACK);
 }
 '''
@@ -156,5 +177,6 @@ with tempfile.TemporaryDirectory(prefix='soh-framebuffer-sampling-') as temporar
         executable = temporary / ('test-' + str(enabled))
         subprocess.run([os.environ.get('CXX', 'g++'), '-std=c++17', '-O2', '-Wall', '-Wextra',
                         '-fno-fast-math', '-ffp-contract=off', '-DSOH3DS_EXPERIMENT_COMMON_PACK=' + str(enabled),
+                        '-I' + str(ROOT / 'platform/3ds/include'),
                         '-I' + str(ROOT / 'third_party/libultraship/include'), str(path), '-o', str(executable)], check=True)
         subprocess.run([str(executable)], check=True)

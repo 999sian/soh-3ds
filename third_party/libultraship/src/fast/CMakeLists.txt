@@ -4,6 +4,27 @@ file(GLOB Source_Files__TopLevel RELATIVE ${CMAKE_CURRENT_SOURCE_DIR} "*.cpp")
 source_group("" FILES ${Source_Files__TopLevel})
 target_sources(libultraship PRIVATE ${Source_Files__TopLevel})
 
+if(N3DS AND SOH3DS_TRIANGLE_RUN_REUSE)
+    set_property(SOURCE interpreter.cpp TARGET_DIRECTORY libultraship
+        APPEND PROPERTY COMPILE_DEFINITIONS SOH3DS_TRIANGLE_RUN_REUSE=1)
+endif()
+
+if(N3DS AND SOH3DS_ARM11_VERTEX_ASM)
+    target_sources(libultraship PRIVATE vertex_transform_arm11.S)
+    target_compile_definitions(libultraship PRIVATE SOH3DS_ARM11_VERTEX_ASM=1)
+endif()
+
+if(N3DS AND SOH3DS_ARM11_TRIANGLE_EMIT)
+    target_sources(libultraship PRIVATE triangle_emit_arm11.S)
+    set_property(SOURCE interpreter.cpp TARGET_DIRECTORY libultraship
+        APPEND PROPERTY COMPILE_DEFINITIONS SOH3DS_ARM11_TRIANGLE_EMIT=1)
+endif()
+
+if(N3DS AND SOH3DS_COMPACT_VERTEX_STREAM)
+    set_property(SOURCE interpreter.cpp TARGET_DIRECTORY libultraship
+        APPEND PROPERTY COMPILE_DEFINITIONS SOH3DS_COMPACT_VERTEX_STREAM=1)
+endif()
+
 #=================== Debug ===================
 
 file(GLOB Source_Files__Debug RELATIVE ${CMAKE_CURRENT_SOURCE_DIR} "debug/*.cpp")

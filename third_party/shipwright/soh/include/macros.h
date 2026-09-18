@@ -2,6 +2,7 @@
 #define MACROS_H
 
 #include <ship/utils/binarytools/endianness.h>
+#include "soh/frame_interpolation_guard.h"
 
 // Upstream TODO: Document reasoning for change
 // #ifndef __GNUC__
@@ -202,11 +203,13 @@ extern GraphicsContext* __gfxCtx;
 // Use the DISP macros defined above when writing to display buffers.
 // #region SOH [General]
 // Augmented to provide debug information in debug build and support interpolation
+#define SOH_RECORD_DISPS_OPEN() FrameInterpolation_RecordOpenChild(__FILE__, __LINE__)
+#define SOH_RECORD_DISPS_CLOSE() FrameInterpolation_RecordCloseChild()
+
 #ifndef NDEBUG
 #define OPEN_DISPS(gfxCtx) \
     { \
-        void FrameInterpolation_RecordOpenChild(const void* a, int b); \
-        FrameInterpolation_RecordOpenChild(__FILE__, __LINE__); \
+        SOH_RECORD_DISPS_OPEN(); \
         GraphicsContext* __gfxCtx; \
         Gfx* dispRefs[4]; \
         __gfxCtx = gfxCtx; \
@@ -215,8 +218,7 @@ extern GraphicsContext* __gfxCtx;
 #else
 #define OPEN_DISPS(gfxCtx) \
     { \
-        void FrameInterpolation_RecordOpenChild(const void* a, int b); \
-        FrameInterpolation_RecordOpenChild(__FILE__, __LINE__); \
+        SOH_RECORD_DISPS_OPEN(); \
         GraphicsContext* __gfxCtx; \
         __gfxCtx = gfxCtx; \
         (void)__gfxCtx;
@@ -224,15 +226,13 @@ extern GraphicsContext* __gfxCtx;
 
 #ifndef NDEBUG
 #define CLOSE_DISPS(gfxCtx) \
-    {void FrameInterpolation_RecordCloseChild(void); \
-    FrameInterpolation_RecordCloseChild();} \
+    SOH_RECORD_DISPS_CLOSE(); \
     Graph_CloseDisps(dispRefs, gfxCtx, __FILE__, __LINE__); \
     } \
     (void)0
 #else
 #define CLOSE_DISPS(gfxCtx) \
-    {void FrameInterpolation_RecordCloseChild(void); \
-    FrameInterpolation_RecordCloseChild();} \
+    SOH_RECORD_DISPS_CLOSE(); \
     (void)0; \
     } \
     (void)0

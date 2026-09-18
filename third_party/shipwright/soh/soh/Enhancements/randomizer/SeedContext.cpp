@@ -84,6 +84,10 @@ void Context::InitStaticData() {
 
 std::shared_ptr<Context> Context::CreateInstance() {
     if (mContext.expired()) {
+        // make_shared keeps the Context storage in its weak control block
+        // after destruction. Release our expired weak reference before
+        // allocating the replacement, avoiding two large blocks at once.
+        mContext.reset();
         auto instance = std::make_shared<Context>();
         mContext = instance;
         GetInstance()->GetLogic()->SetContext(GetInstance());

@@ -1,3 +1,4 @@
+#define SOH_FRAME_INTERPOLATION_IMPLEMENTATION
 #include <vector>
 #include <array>
 #include <map>
@@ -252,7 +253,11 @@ struct Path {
 
 struct Recording {
     // The root must also stay at the same address when recordings swap.
+    #ifdef __3DS__
+    unique_ptr<Path> root_path = gSoh3dsFrameInterpolationEnabled ? make_unique<Path>() : nullptr;
+#else
     unique_ptr<Path> root_path = make_unique<Path>();
+#endif
 };
 
 void ReclaimExpiredPaths() {
@@ -546,11 +551,16 @@ unordered_map<Mtx*, MtxF> FrameInterpolation_Interpolate(float step) {
     InterpolateCtx ctx;
     ctx.step = step;
     ctx.w = 1.0f - step;
-    ctx.interpolate_branch(previous_recording.root_path.get(), current_recording.root_path.get());
+    if (previous_recording.root_path && current_recording.root_path) {
+        ctx.interpolate_branch(previous_recording.root_path.get(), current_recording.root_path.get());
+    }
     return ctx.mtx_replacements;
 }
 
 void FrameInterpolation_StartRecord(void) {
+    // Defensive lazy creation if recording globals preceded model detection.
+    if (!current_recording.root_path) current_recording.root_path = make_unique<Path>();
+    if (!previous_recording.root_path) previous_recording.root_path = make_unique<Path>();
     // Swap and bump the generation: the tree that becomes `current` still
     // holds the recording from two ticks ago and is emptied node by node as
     // this tick touches it (see Path::Touch). Interpolation reads

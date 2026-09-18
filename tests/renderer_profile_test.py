@@ -9,7 +9,7 @@ root = Path(__file__).resolve().parents[1]
 source = (root / 'platform/3ds/source/gfx_citro3d.cpp').read_text()
 begin = source.index('struct Soh3dsProfileCounter {')
 end = source.index('// Frame pacing state', begin)
-report_begin = source.index('        if (sRenderProfileEnabled) {', end)
+report_begin = source.index('        if (gSoh3dsRenderProfileEnabled) {', end)
 report_end = source.index('        // Every 10th sample', report_begin)
 profile_code = source[begin:end]
 if 'Soh3dsOpenPerformanceLog' not in profile_code:
@@ -29,6 +29,7 @@ code = r'''
 #include <sys/stat.h>
 #include <unistd.h>
 #include "fast/backends/gfx_profile_3ds.h"
+#include "fast/backends/game_profile_3ds.h"
 #include "ship/utils/logging_3ds.h"
 unsigned testLoggingFlags = 0;
 extern "C" unsigned Soh3dsLoggingFlags() { return testLoggingFlags; }
@@ -45,16 +46,16 @@ int main() {
     // Basic capture must not turn on per-draw clocks. The extra profile flag
     // is inert without capture, and output failure must leave probes off.
     assert(Soh3dsOpenPerformanceLog() == nullptr);
-    assert(!sRenderProfileEnabled);
+    assert(!gSoh3dsRenderProfileEnabled);
     auto flag = std::fopen("perfprofile.flag", "wb"); assert(flag); std::fclose(flag);
     assert(Soh3dsOpenPerformanceLog() == nullptr);
-    assert(!sRenderProfileEnabled);
+    assert(!gSoh3dsRenderProfileEnabled);
     std::remove("perfprofile.flag");
     flag = std::fopen("perftrace.flag", "wb"); assert(flag); std::fclose(flag);
     assert(Soh3dsOpenPerformanceLog() == nullptr); // legacy flags cannot opt in
     testLoggingFlags = SOH3DS_LOG_GENERAL;
     auto capture = Soh3dsOpenPerformanceLog(); assert(capture);
-    assert(!sRenderProfileEnabled);
+    assert(!gSoh3dsRenderProfileEnabled);
     { Soh3dsProfileScope scope(Soh3dsProfileSection::Triangle); }
     Soh3dsProfilePackBatch(true, 3);
     assert(clockReads == 0 && sPackCoverage.totalBatches == 0);
@@ -62,29 +63,35 @@ int main() {
     flag = std::fopen("perfprofile.flag", "wb"); assert(flag); std::fclose(flag);
     testLoggingFlags |= SOH3DS_LOG_PROFILE;
     capture = Soh3dsOpenPerformanceLog(); assert(capture);
-    assert(sRenderProfileEnabled);
+    assert(gSoh3dsRenderProfileEnabled);
     std::fclose(capture); std::remove("perf.csv");
     assert(mkdir("perf.csv", 0700) == 0);
     assert(Soh3dsOpenPerformanceLog() == nullptr);
-    assert(!sRenderProfileEnabled);
+    assert(!gSoh3dsRenderProfileEnabled);
     assert(rmdir("perf.csv") == 0);
     std::remove("perftrace.flag"); std::remove("perfprofile.flag");
     testLoggingFlags = 0;
     assert(Soh3dsPerformanceLog() == nullptr);
     testLoggingFlags = SOH3DS_LOG_GENERAL | SOH3DS_LOG_PROFILE;
-    assert(Soh3dsPerformanceLog() != nullptr && sRenderProfileEnabled);
+    assert(Soh3dsPerformanceLog() != nullptr && gSoh3dsRenderProfileEnabled);
     testLoggingFlags = SOH3DS_LOG_GENERAL;
-    assert(Soh3dsPerformanceLog() != nullptr && !sRenderProfileEnabled);
+    assert(Soh3dsPerformanceLog() != nullptr && !gSoh3dsRenderProfileEnabled);
     testLoggingFlags = 0;
-    assert(Soh3dsPerformanceLog() == nullptr && !sRenderProfileEnabled);
+    assert(Soh3dsPerformanceLog() == nullptr && !gSoh3dsRenderProfileEnabled);
     for (unsigned i = 0; i < static_cast<unsigned>(Soh3dsProfileSection::Count); ++i) {
         Soh3dsProfileScope scope(static_cast<Soh3dsProfileSection>(i));
     }
+    for (unsigned i = 0; i < SOH3DS_GAME_COUNT; ++i) {
+        auto token = Soh3dsGameProfileStart(i);
+        Soh3dsGameProfileFinish(&token);
+    }
+    Soh3dsProfileVertexBatch(Soh3dsVertexPath::Arm11, 9);
+    assert(sVertexCoverage[1] == 0);
     assert(clockReads == 0);
     Soh3dsProfilePackBatch(true, 12);
     assert(sPackCoverage.totalBatches == 0);
     for (const auto& c : sRenderProfile) assert(c.calls == 0 && c.samples == 0);
-    sRenderProfileEnabled = true;
+    gSoh3dsRenderProfileEnabled = true;
     Soh3dsProfilePackBatch(false, 3);
     Soh3dsProfilePackBatch(true, 12);
     assert(clockReads == 0);
@@ -115,12 +122,31 @@ int main() {
     for (int i = 0; i < 47; ++i) { Soh3dsProfileScope scope(Soh3dsProfileSection::Triangle); }
     assert(c.calls == 47 && c.samples == 1 && c.ticks == 1);
     const unsigned reads = clockReads;
-    sRenderProfileEnabled = false;
+    gSoh3dsRenderProfileEnabled = false;
     { Soh3dsProfileScope scope(Soh3dsProfileSection::Triangle); }
     assert(clockReads == reads && c.calls == 47);
-    sRenderProfileEnabled = true;
+    gSoh3dsRenderProfileEnabled = true;
     assert(Soh3dsProfileBegin(1000) == 0);
     Soh3dsProfileEnd(1000, 100);
+
+    for (unsigned i = 0; i < SOH3DS_GAME_COUNT; ++i) {
+        auto token = Soh3dsGameProfileStart(i);
+        clockTicks += 2679;
+        Soh3dsGameProfileFinish(&token);
+        token = Soh3dsGameProfileStart(i);
+        clockTicks += 5359;
+        Soh3dsGameProfileFinish(&token);
+        assert(sGameProfile[i].ticks == 8040 && sGameProfile[i].calls == 2);
+        assert(sGameProfile[i].maxTicks == 5360);
+    }
+    auto readsBeforeInvalid = clockReads;
+    assert(Soh3dsGameProfileBegin(1000) == 0);
+    Soh3dsGameProfileEnd(1000, 100);
+    assert(clockReads == readsBeforeInvalid);
+    Soh3dsProfileVertexBatch(Soh3dsVertexPath::Generic, 2);
+    Soh3dsProfileVertexBatch(Soh3dsVertexPath::Arm11, 3);
+    Soh3dsProfileVertexBatch(Soh3dsVertexPath::Compact, 5);
+    Soh3dsProfileVertexBatch(Soh3dsVertexPath::CompactClip, 1);
 
     // Exercise the production formatter with the largest representable fields:
     // an undersized buffer silently omits the entire record.
@@ -148,7 +174,41 @@ int main() {
     assert(std::strstr(record, "units=batches/vertices common=1/12 total=2/15\n") != nullptr);
     assert(sPackCoverage.totalBatches == 0 && sPackCoverage.totalVertices == 0);
     assert(sPackCoverage.commonBatches == 0 && sPackCoverage.commonVertices == 0);
+    assert(std::fgets(record, sizeof(record), sPerformanceLog) != nullptr);
+    assert(std::strstr(record, "units=us/calls/max_us inclusive=1") != nullptr);
+    for (const char* label : {"update", "play", "commands", "actors", "actor_draw", "collision", "animation", "room"}) {
+        char expected[64]; std::snprintf(expected, sizeof(expected), " %s=30/2/20", label);
+        assert(std::strstr(record, expected) != nullptr);
+    }
+    assert(std::strchr(record, '\n') != nullptr);
+    for (const auto& counter : sGameProfile) assert(counter.calls == 0 && counter.ticks == 0 && counter.maxTicks == 0);
+    assert(std::fgets(record, sizeof(record), sPerformanceLog) != nullptr);
+    assert(std::strstr(record, "generic=2 arm11=3 compact=5 compact_clip=1\n") != nullptr);
+    for (auto count : sVertexCoverage) assert(count == 0);
     assert(std::fgets(record, sizeof(record), sPerformanceLog) == nullptr);
+    // New coarse fields also fit at maximal widths without dropping a record.
+    std::fclose(sPerformanceLog);
+    sPerformanceLog = std::tmpfile(); assert(sPerformanceLog);
+    for (auto& c : sGameProfile) {
+        c.ticks = c.maxTicks = std::numeric_limits<uint64_t>::max();
+        c.calls = std::numeric_limits<uint32_t>::max();
+    }
+    for (auto& count : sVertexCoverage) count = std::numeric_limits<uint32_t>::max();
+    Report(); std::rewind(sPerformanceLog);
+    for (unsigned line = 0; line < 4; ++line) {
+        assert(std::fgets(record, sizeof(record), sPerformanceLog) != nullptr);
+        assert(std::strchr(record, '\n') != nullptr);
+        if (line == 2) {
+            for (const char* label : {"update", "play", "commands", "actors", "actor_draw", "collision", "animation", "room"}) {
+                char expected[128];
+                std::snprintf(expected, sizeof(expected), " %s=%llu/%u/%llu", label,
+                    static_cast<unsigned long long>(std::numeric_limits<uint64_t>::max() / 268u),
+                    std::numeric_limits<uint32_t>::max(),
+                    static_cast<unsigned long long>(std::numeric_limits<uint64_t>::max() / 268u));
+                assert(std::strstr(record, expected) != nullptr);
+            }
+        }
+    }
     std::fclose(sPerformanceLog);
     for (const auto& counter : sRenderProfile) {
         assert(counter.ticks == 0 && counter.calls == 0 && counter.samples == 0);

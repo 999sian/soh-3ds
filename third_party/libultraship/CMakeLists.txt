@@ -19,6 +19,14 @@ endif()
 
 project(libultraship LANGUAGES C CXX)
 
+if(N3DS)
+    enable_language(ASM)
+    option(SOH3DS_ARM11_VERTEX_ASM "Use experimental ARM11 batched vertex transforms" OFF)
+    option(SOH3DS_COMPACT_VERTEX_STREAM "Experiment: compact byte-colour vertex batches" OFF)
+    option(SOH3DS_ARM11_TRIANGLE_EMIT "Experiment: guarded ARM11 triangle emission" OFF)
+    option(SOH3DS_TRIANGLE_RUN_REUSE "Experiment: reuse triangle state within uninterrupted command runs" OFF)
+endif()
+
 if (CMAKE_SYSTEM_NAME STREQUAL "Darwin" OR CMAKE_SYSTEM_NAME STREQUAL "iOS")
     enable_language(OBJCXX)
     set(CMAKE_OBJC_FLAGS "${CMAKE_OBJC_FLAGS} -fobjc-arc")

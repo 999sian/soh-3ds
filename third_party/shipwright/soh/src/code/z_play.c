@@ -1,3 +1,4 @@
+#include "fast/backends/game_profile_3ds.h"
 #include "global.h"
 #include <stdio.h>
 #include "vt.h"
@@ -709,6 +710,7 @@ void Play_Init(GameState* thisx) {
 }
 
 void Play_Update(PlayState* play) {
+    SOH3DS_GAME_PROFILE_SCOPE(profile, SOH3DS_GAME_PLAY_UPDATE);
     Input* input = play->state.input;
     s32 isPaused;
     s32 pad1;
@@ -1401,6 +1403,7 @@ void Play_DrawOverlayElements(PlayState* play) {
 }
 
 void Play_Draw(PlayState* play) {
+    SOH3DS_GAME_PROFILE_SCOPE(profile, SOH3DS_GAME_COMMANDS);
     GraphicsContext* gfxCtx = play->state.gfxCtx;
     Lights* sp228;
     Vec3f sp21C;

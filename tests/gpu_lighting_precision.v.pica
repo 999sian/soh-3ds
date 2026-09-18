@@ -1,0 +1,24 @@
+; Diagnostic one-light candidate. Sequential products/adds, positive truncation.
+.fvec coeff, ambient, light, scales
+.in position_in v0
+.in normal_in v1
+.out position_out position
+.out color_out color
+.proc main
+ mov position_out, position_in
+ mul r0.x, coeff.x, normal_in.x
+ add r0.x, scales.x, r0.x
+ mul r1.x, coeff.y, normal_in.y
+ add r0.x, r0.x, r1.x
+ mul r1.x, coeff.z, normal_in.z
+ add r0.x, r0.x, r1.x
+ mul r0.x, scales.y, r0.x
+ max r0.x, scales.x, r0.x
+ mul r1.xyz, light, r0.xxx
+ add r1.xyz, ambient, r1
+ flr r1.xyz, r1
+ min r1.xyz, scales.www, r1
+ mul color_out.xyz, scales.zzz, r1
+ mov color_out.w, position_in.w
+ end
+.end

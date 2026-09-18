@@ -1,4 +1,7 @@
 #include "global.h"
+#ifdef SOH3DS_AUDIO_PROFILE
+#include "ship/utils/audio_profile_3ds.h"
+#endif
 
 #define SAMPLES_TO_OVERPRODUCE 0x10
 #define EXTRA_BUFFERED_AI_SAMPLES_TARGET 0x80
@@ -26,6 +29,12 @@ void func_800E59AC(s32 playerIdx, s32 fadeTimer);
 void Audio_InitMesgQueues(void);
 AudioTask* func_800E5000(void);
 void Audio_ProcessCmds(u32);
+#ifdef __3DS__
+// Graph-thread state: a slow synthesis batch can fill cmdProcQueue before
+// the reset range is published. Retry from the reset-acknowledgement poll;
+// Audio_Update otherwise waits forever and stops submitting commands.
+static bool sAudioResetSchedulePending = false;
+#endif
 void func_800E6128(SequencePlayer* seqPlayer, AudioCmd* arg1);
 void func_800E5958(s32 playerIdx, s32 fadeTimer);
 s32 func_800E66C0(s32 arg0);
@@ -46,6 +55,9 @@ void AudioMgr_CreateNextAudioBuffer(s16* samples, u32 num_samples) {
     AudioLoad_DecreaseSampleDmaTtls();
     AudioLoad_ProcessLoads(gAudioContext.resetStatus);
     AudioLoad_ProcessScriptLoads();
+#ifdef SOH3DS_AUDIO_PROFILE
+    Soh3dsAudioProfileMark(SOH3DS_AUDIO_LOADS);
+#endif
 
     if (gAudioContext.resetStatus != 0) {
         if (AudioHeap_ResetStep() == 0) {
@@ -67,6 +79,9 @@ void AudioMgr_CreateNextAudioBuffer(s16* samples, u32 num_samples) {
         }
     }
     s32 writtenCmds;
+#ifdef SOH3DS_AUDIO_PROFILE
+    Soh3dsAudioProfileMark(SOH3DS_AUDIO_COMMANDS);
+#endif
     AudioSynth_Update(gAudioContext.curAbiCmdBuf, &writtenCmds, samples, num_samples);
     gAudioContext.audioRandom = (gAudioContext.audioRandom + gAudioContext.totalTaskCnt) * osGetCount();
 }
@@ -533,6 +548,15 @@ s32 func_800E5EDC(void) {
     s32 pad;
     OSMesg sp18;
 
+#ifdef __3DS__
+    if (sAudioResetSchedulePending) {
+        if (Audio_ScheduleProcessCmds() == -1) {
+            return 0;
+        }
+        sAudioResetSchedulePending = false;
+    }
+#endif
+
     if (osRecvMesg(gAudioContext.audioResetQueueP, &sp18, OS_MESG_NOBLOCK) == -1) {
         return 0;
     } else if (gAudioContext.audioResetSpecIdToLoad != sp18.data8) {
@@ -554,6 +578,9 @@ s32 func_800E5F88(s32 resetPreloadID) {
     OSMesg msg;
     s32 pad;
 
+#ifdef __3DS__
+    sAudioResetSchedulePending = false;
+#endif
     func_800E5F34();
     resetStatus = gAudioContext.resetStatus;
     if (resetStatus != 0) {
@@ -571,7 +598,13 @@ s32 func_800E5F88(s32 resetPreloadID) {
     func_800E5F34();
     Audio_QueueCmdS32(0xF9000000, resetPreloadID);
 
+#ifdef __3DS__
+    const s32 result = Audio_ScheduleProcessCmds();
+    sAudioResetSchedulePending = result == -1;
+    return result;
+#else
     return Audio_ScheduleProcessCmds();
+#endif
 }
 
 void Audio_PreNMIInternal(void) {

@@ -2,8 +2,12 @@
 #ifdef __3DS__
 #include <malloc.h>
 #include "setup/setup_3ds.h"
+extern "C" bool Soh3dsUsesOldProfile();
 #endif
 #include "OTRAudio.h"
+#ifdef SOH3DS_DSP_CAPTURE
+#include "producer_gate.h"
+#endif
 
 // Single definition of the audio-thread sync block (see OTRAudio.h).
 OTRAudioSync audio;
@@ -17,6 +21,8 @@ OTRAudioSync audio;
 #include <spdlog/common.h>
 #ifdef __3DS__
 #include <ship/utils/logging_3ds.h>
+#include <ship/utils/audio_diagnostics_3ds.h>
+#include "ship/utils/audio_profile_3ds.h"
 #endif
 #include <imgui.h>
 
@@ -1192,6 +1198,11 @@ bool OTRGlobals::HasOriginal() {
 }
 
 uint32_t OTRGlobals::GetInterpolationFPS() {
+#ifdef __3DS__
+    // The detected old-model profile deliberately omits extra presentation frames,
+    // including when a copied New 3DS configuration requests refresh matching.
+    if (Soh3dsUsesOldProfile()) return 20;
+#endif
     if (CVarGetInteger(CVAR_SETTING("MatchRefreshRate"), 0)) {
         return Ship::Context::GetRawInstance()->GetWindow()->GetCurrentRefreshRate();
     } else if (CVarGetInteger(CVAR_VSYNC_ENABLED, 1) ||
@@ -1271,17 +1282,25 @@ void OTRAudio_Thread() {
 
 #ifdef __3DS__
         // SoH-3DS: temporary diagnostics - measure raw synthesis cost against
-        // real time. Each batch is total_frames/32000 seconds of audio; if
-        // synthesis ticks exceed that, no pacing fix can prevent gaps.
+        // real time. Wall ticks include preemption and lock/service waits;
+        // they are not a measurement of CPU execution time alone.
         extern int64_t svcGetSystemTick(void) __asm__("svcGetSystemTick");
-        const uint64_t synthStart = (uint64_t)svcGetSystemTick();
+        const bool captureAudio = Soh3dsLoggingEnabled(SOH3DS_LOG_GENERAL);
+        const uint64_t synthStart = captureAudio ? (uint64_t)svcGetSystemTick() : 0;
+#ifdef SOH3DS_AUDIO_PROFILE
+        bool reportAudioProfile = false;
+        Soh3dsAudioProfileBegin(total_frames, captureAudio);
+#endif
 #endif
         for (int i = 0; i < UPDATES_PER_BATCH; i++) {
             AudioMgr_CreateNextAudioBuffer(audio_buffer + i * (num_audio_samples * NUM_AUDIO_CHANNELS),
                                            num_audio_samples);
         }
 #ifdef __3DS__
-        {
+#ifdef SOH3DS_AUDIO_PROFILE
+        Soh3dsAudioProfileEnd();
+#endif
+        if (captureAudio) {
             static uint64_t sSynthTicks = 0;
             static uint64_t sAudioFrames = 0;
             static uint32_t sBatches = 0;
@@ -1291,6 +1310,14 @@ void OTRAudio_Thread() {
                 // 268 ticks/us; batch real-time budget is frames/32 us.
                 const uint64_t synthUs = sSynthTicks / 268u;
                 const uint64_t budgetUs = sAudioFrames * 1000u / 32u;
+                char record[192];
+                snprintf(record, sizeof(record), "audio synth: batches=256 synthUs=%llu budgetUs=%llu percent=%llu\n",
+                         (unsigned long long)synthUs, (unsigned long long)budgetUs,
+                         (unsigned long long)(budgetUs ? synthUs * 100u / budgetUs : 0));
+                Soh3dsWriteAudioDiagnostic(record);
+#ifdef SOH3DS_AUDIO_PROFILE
+                reportAudioProfile = true;
+#endif
                 // SPDLOG so this reaches sdmc:/logs/SoH-3DS.log on hardware,
                 // where svcOutputDebugString output is invisible.
                 SPDLOG_INFO("SoH-3DS audio: synth {}ms for {}ms of audio ({}%)", (unsigned long)(synthUs / 1000u),
@@ -1303,68 +1330,48 @@ void OTRAudio_Thread() {
 #endif
 
         AudioPlayer_Play(reinterpret_cast<u8*>(audio_buffer), total_samples * sizeof(int16_t));
+#ifdef SOH3DS_AUDIO_PROFILE
+        // Submit finished PCM before diagnostic SD/IPC work can delay it.
+        if (reportAudioProfile) Soh3dsAudioProfileReport();
+#endif
     };
 
-    // Self-pump cadence. The gfx thread wakes us once per rendered frame
-    // (Graph_ProcessGfxCommands sets audio.processing), but a single long
-    // frame leave us asleep while the backend's queue drains to silence.
-    // So we also wake on a short timeout, independent of the gfx frame rate.
-    // Doing so is in fact closer to the console, where the audio task ran
-    // off the scheduler rather than gated on rendering..
-    constexpr auto kSelfPumpInterval = std::chrono::milliseconds(5);
-
-    // The self-pump timeout must wait that the game has reached its render
-    // loop, to avoid accessing uninitialized variables.
+#ifdef SOH3DS_OLD_AUDIO_CORE0
+    extern int32_t svcGetProcessorID(void) __asm__("svcGetProcessorID");
+    const bool yieldForGame = svcGetProcessorID() == 0;
+#endif
     bool primed = false;
-
-    while (audio.running) {
-        {
-            std::unique_lock<std::mutex> Lock(audio.mutex);
-            if (!primed) {
-                // Pre-init: block until the gfx thread drives the first buffer
-                // (engine guaranteed ready by then), exactly as before.
-                while (!audio.processing && audio.running) {
-                    audio.cv_to_thread.wait(Lock);
-                }
-                primed = true;
-            } else if (!audio.processing && audio.running) {
-                // Primed: wait for the next gfx wake, but no longer than
-                // kSelfPumpInterval so a stalled gfx thread can't starve the
-                // backend queue. A pending wake falls straight through.
-                audio.cv_to_thread.wait_for(Lock, kSelfPumpInterval);
-            }
-
-            if (!audio.running) {
-                break;
-            }
-        }
-
-        {
-            std::unique_lock<std::mutex> Lock(audio.mutex);
-
-            // Producer guard (banteg/Shipwright#6594): skip advancing the audio
-            // engine if the backend ring cannot accept the largest next burst.
-            // Generating PCM that DoPlay() would refuse creates a discontinuity
-            // audible as a click. The pre-buffer loop below will catch up once
-            // the backend drains enough.
-            if (AudioPlayer_Buffered() + SAMPLES_MID * UPDATES_PER_BATCH > AudioPlayer_GetDesiredBuffered()) {
-                audio.processing = false;
-            } else {
-                produce_next_batch();
-                audio.processing = false;
-            }
-        }
-
-        // Pre-buffer: fill the reservoir while the backend can accept more,
-        // without waiting for the next frame signal. This absorbs load spikes.
-        // Safe for BGM — the N64 sequencer advances independently of gameplay.
-        // The producer guard (same as above) prevents advancing the audio engine
-        // when the backend ring is already at capacity.
-        while (audio.running && AudioPlayer_Buffered() < AudioPlayer_GetDesiredBuffered()) {
-            if (AudioPlayer_Buffered() + SAMPLES_MID * UPDATES_PER_BATCH > AudioPlayer_GetDesiredBuffered()) {
+    while (audio.WaitForWork(primed)) {
+#ifdef SOH3DS_OLD_AUDIO_CORE0
+        unsigned consecutiveBatches = 0;
+#endif
+        // Refill independently of rendering, protecting EVERY synthesis batch
+        // from savestate heap mutation. Release the lock between batches.
+        // Graph_ProcessGfxCommands signals through a separate wake mutex.
+        while (audio.running) {
+            std::unique_lock<std::mutex> lock(audio.mutex);
+#ifdef SOH3DS_DSP_CAPTURE
+            // APT/backend control pauses only between complete audio batches.
+            // Failed acquisition returns to WaitForWork, so Stop can still join
+            // the producer while the console is suspended.
+            SohDspProducerScope dspProducer;
+            if (!dspProducer) break;
+#endif
+            if (!audio.running || AudioPlayer_Buffered() + SAMPLES_MID * UPDATES_PER_BATCH >
+                                      AudioPlayer_GetDesiredBuffered()) {
                 break;
             }
             produce_next_batch();
+#ifdef SOH3DS_OLD_AUDIO_CORE0
+            // If synthesis cannot catch playback, this higher-priority core-0
+            // thread must still let the game process input and request Stop.
+            // Timed sleep permits lower-priority work; a plain yield need not.
+            if (yieldForGame && ++consecutiveBatches == 4) {
+                lock.unlock();
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                consecutiveBatches = 0;
+            }
+#endif
         }
     }
 }
@@ -1373,12 +1380,10 @@ void OTRAudio_Thread() {
 #undef UPDATES_PER_BATCH
 
 #ifdef __3DS__
-// SoH-3DS: run the audio thread off core 0, following mario-kart-64-3ds
-// (platform/3ds/source/audio_runtime_3ds.cpp). As a std::thread it lands on
-// core 0 and competes with the game loop and renderer, so synthesis starves
-// during heavy frames - audible as stutter - and the only mitigation was a
-// deep (high-latency) backend buffer. Core 2 exists on New 3DS; on Old 3DS
-// core 1 becomes usable once APT grants the app a share of the syscore.
+// New 3DS can dedicate core 2 to synthesis. The default Old policy uses the
+// APT-granted share of core 1. An opt-in Old experiment uses a high-priority
+// core-0 thread: unlike the std::thread fallback, it can preempt rendering,
+// trading game CPU time for audio delivery without the core-1 time allowance.
 // <3ds.h> conflicts with libultra's typedefs, so declare the few calls used.
 extern "C" {
 typedef struct Thread_tag* Soh3dsThreadHandle;
@@ -1387,9 +1392,14 @@ Soh3dsThreadHandle threadCreate(void (*entry)(void*), void* arg, size_t stackSiz
 int32_t threadJoin(Soh3dsThreadHandle thread, uint64_t timeoutNs);
 void threadFree(Soh3dsThreadHandle thread);
 int32_t APT_SetAppCpuTimeLimit(uint32_t percent);
+int32_t APT_GetAppCpuTimeLimit(uint32_t* percent);
 int32_t APT_CheckNew3DS(bool* isNew);
 }
 static Soh3dsThreadHandle sSoh3dsAudioThread = nullptr;
+// Retained for debugger inspection; no per-frame polling or logging.
+static int sSoh3dsAudioCore = -1;
+static uint32_t sSoh3dsAudioCpuLimit = 0;
+static int32_t sSoh3dsAudioCpuLimitResult = 0;
 static void Soh3dsAudioThreadEntry(void*) {
     OTRAudio_Thread();
 }
@@ -1404,26 +1414,41 @@ void OTRAudio_Init() {
 #ifdef __3DS__
         constexpr size_t kAudioStackSize = 128 * 1024;
         constexpr int32_t kAudioPriority = 0x18; // higher than the 0x30 main thread
+        sSoh3dsAudioCore = -1;
+        sSoh3dsAudioCpuLimit = 0;
         bool isNewModel = false;
         APT_CheckNew3DS(&isNewModel);
         if (isNewModel) {
             sSoh3dsAudioThread = threadCreate(Soh3dsAudioThreadEntry, nullptr, kAudioStackSize, kAudioPriority, 2, false);
+            if (sSoh3dsAudioThread) sSoh3dsAudioCore = 2;
         }
+#ifdef SOH3DS_OLD_AUDIO_CORE0
+        else {
+            sSoh3dsAudioThread = threadCreate(Soh3dsAudioThreadEntry, nullptr, kAudioStackSize, kAudioPriority, 0, false);
+            if (sSoh3dsAudioThread) sSoh3dsAudioCore = 0;
+        }
+#endif
         if (sSoh3dsAudioThread == nullptr) {
             for (uint32_t limit : { 80u, 70u, 50u, 30u }) {
                 if (APT_SetAppCpuTimeLimit(limit) < 0) {
                     continue;
                 }
                 sSoh3dsAudioThread = threadCreate(Soh3dsAudioThreadEntry, nullptr, kAudioStackSize, kAudioPriority, 1, false);
-                break;
+                if (sSoh3dsAudioThread) {
+                    sSoh3dsAudioCore = 1;
+                    break;
+                }
             }
         }
         if (sSoh3dsAudioThread != nullptr) {
-            fprintf(stderr, "soh-3ds audio: synthesis thread on core %d\n", isNewModel ? 2 : 1);
+            sSoh3dsAudioCpuLimitResult = APT_GetAppCpuTimeLimit(&sSoh3dsAudioCpuLimit);
+            fprintf(stderr, "soh-3ds audio: core=%d grantedCpu=%lu queryResult=%ld\n", sSoh3dsAudioCore,
+                    (unsigned long)sSoh3dsAudioCpuLimit, (long)sSoh3dsAudioCpuLimitResult);
         } else {
             // ponytail: core-0 std::thread fallback keeps audio functional on
             // whatever refuses the app a second core.
             fprintf(stderr, "soh-3ds audio: no spare core, synthesis on core 0\n");
+            sSoh3dsAudioCore = 0;
             audio.thread = std::thread(OTRAudio_Thread);
         }
 #else
@@ -1440,12 +1465,10 @@ extern "C" char** fontMap;
 extern "C" size_t fontMapSize;
 
 extern "C" void OTRAudio_Exit() {
-    // Tell the audio thread to stop
-    {
-        std::unique_lock<std::mutex> Lock(audio.mutex);
-        audio.running = false;
-    }
-    audio.cv_to_thread.notify_all();
+    audio.Stop();
+#ifdef SOH3DS_DSP_CAPTURE
+    SohDspProducerPause(SOH_DSP_PAUSE_SHUTDOWN);
+#endif
 
     // Wait until the audio thread quit
 #ifdef __3DS__
@@ -1983,9 +2006,13 @@ extern "C" void InitOTR(int argc, char* argv[]) {
     if (CVarGetInteger(CVAR_REMOTE_ANCHOR("Enabled"), 0)) {
         Anchor::Instance->Enable();
     }
+    SOH3DS_INIT_TRACE("ShipInit::InitAll");
     ShipInit::InitAll();
+    SOH3DS_INIT_TRACE("Rando::StaticData::InitHashMaps");
     Rando::StaticData::InitHashMaps();
+    SOH3DS_INIT_TRACE("Rando::AddExcludedOptions");
     OTRGlobals::Instance->gRandoContext->AddExcludedOptions();
+    SOH3DS_INIT_TRACE("InitOTR complete");
 }
 
 extern "C" void SaveManager_ThreadPoolWait() {
@@ -2168,25 +2195,33 @@ void RunCommands(Gfx* Commands, int time, int step, int denom, int count) {
     UIWidgets::Colors themeColor =
         static_cast<UIWidgets::Colors>(CVarGetInteger(CVAR_SETTING("Menu.Theme"), UIWidgets::Colors::LightBlue));
     ImGui::PushStyleColor(ImGuiCol_TitleBgActive, UIWidgets::ColorValues.at(themeColor));
-    for (int i = 0; i < count; i++) {
-        time += step;
 #ifdef __3DS__
-        // SoH-3DS: the renderer paces frames on an absolute schedule; while it
-        // is behind, draw only the last frame of this tick so the game keeps
-        // its 20 Hz instead of paying a second render it cannot afford. The
-        // last frame is never skipped - a tick must present something and
-        // the intermediate ones are the only thing interpolation adds.
-        if (i + 1 < count && Soh3dsFrameBehind()) {
-            Soh3dsFrameDropped();
-            intp->mInterpolationIndex++;
-            continue;
-        }
+    if (!gSoh3dsFrameInterpolationEnabled) {
+        intp->mInterpolationT = 1.0f;
+        wnd->DrawAndRunGraphicsCommands(Commands);
+    } else
 #endif
-        std::unordered_map<Mtx*, MtxF> mtx_replacements =
-            (time == denom) ? std::unordered_map<Mtx*, MtxF>() : FrameInterpolation_Interpolate((float)time / denom);
-        intp->mInterpolationT = (float)time / denom;
-        wnd->DrawAndRunGraphicsCommands(Commands, mtx_replacements);
-        intp->mInterpolationIndex++;
+    {
+        for (int i = 0; i < count; i++) {
+            time += step;
+#ifdef __3DS__
+            // SoH-3DS: the renderer paces frames on an absolute schedule; while it
+            // is behind, draw only the last frame of this tick so the game keeps
+            // its 20 Hz instead of paying a second render it cannot afford. The
+            // last frame is never skipped - a tick must present something and
+            // the intermediate ones are the only thing interpolation adds.
+            if (i + 1 < count && Soh3dsFrameBehind()) {
+                Soh3dsFrameDropped();
+                intp->mInterpolationIndex++;
+                continue;
+            }
+#endif
+            std::unordered_map<Mtx*, MtxF> mtx_replacements =
+                (time == denom) ? std::unordered_map<Mtx*, MtxF>() : FrameInterpolation_Interpolate((float)time / denom);
+            intp->mInterpolationT = (float)time / denom;
+            wnd->DrawAndRunGraphicsCommands(Commands, mtx_replacements);
+            intp->mInterpolationIndex++;
+        }
     }
     ImGui::PopStyleColor();
 }
@@ -2206,56 +2241,61 @@ extern "C" void Graph_ProcessGfxCommands(Gfx* commands) {
 #ifdef __3DS__
     ++sGameTicks;
 #endif
+    audio.NotifyProcessing();
+#ifdef __3DS__
+    if (!gSoh3dsFrameInterpolationEnabled) {
+        // Native gameplay is 20 Hz; transitions keep their original update rate.
+        auto wnd = std::dynamic_pointer_cast<Fast::Fast3dWindow>(Ship::Context::GetRawInstance()->GetWindow());
+        if (wnd != nullptr) wnd->SetTargetFps(60 / R_UPDATE_RATE);
+        RunCommands(commands, 0, 0, 0, 1);
+    } else
+#endif
     {
-        std::unique_lock<std::mutex> Lock(audio.mutex);
-        audio.processing = true;
+        int target_fps = OTRGlobals::Instance->GetInterpolationFPS();
+        static int last_fps;
+        static int last_update_rate;
+        static int time;
+        int fps = target_fps;
+        int original_fps = 60 / R_UPDATE_RATE;
+        auto wnd = std::dynamic_pointer_cast<Fast::Fast3dWindow>(Ship::Context::GetRawInstance()->GetWindow());
+
+        if (target_fps == 20 || original_fps > target_fps) {
+            fps = original_fps;
+        }
+
+        if (last_fps != fps || last_update_rate != R_UPDATE_RATE) {
+            time = 0;
+        }
+
+        // time_base = fps * original_fps (one second)
+        int next_original_frame = fps;
+
+        int start_time = time;
+        int count = 0;
+        while (time + original_fps <= next_original_frame) {
+            time += original_fps;
+            count++;
+        }
+
+        time -= fps;
+
+        if (wnd != nullptr) {
+            wnd->SetTargetFps(fps);
+        }
+
+        int step = original_fps;
+        // When the gfx debugger is active, only run with the final mtx
+        if (GfxDebuggerIsDebugging()) {
+            start_time = next_original_frame;
+            step = 0;
+            count = 1;
+        }
+
+        RunCommands(commands, start_time, step, next_original_frame, count);
+
+        last_fps = fps;
+        last_update_rate = R_UPDATE_RATE;
     }
-
-    audio.cv_to_thread.notify_one();
-    int target_fps = OTRGlobals::Instance->GetInterpolationFPS();
-    static int last_fps;
-    static int last_update_rate;
-    static int time;
-    int fps = target_fps;
-    int original_fps = 60 / R_UPDATE_RATE;
-    auto wnd = std::dynamic_pointer_cast<Fast::Fast3dWindow>(Ship::Context::GetRawInstance()->GetWindow());
-
-    if (target_fps == 20 || original_fps > target_fps) {
-        fps = original_fps;
-    }
-
-    if (last_fps != fps || last_update_rate != R_UPDATE_RATE) {
-        time = 0;
-    }
-
-    // time_base = fps * original_fps (one second)
-    int next_original_frame = fps;
-
-    int start_time = time;
-    int count = 0;
-    while (time + original_fps <= next_original_frame) {
-        time += original_fps;
-        count++;
-    }
-
-    time -= fps;
-
-    if (wnd != nullptr) {
-        wnd->SetTargetFps(fps);
-    }
-
-    int step = original_fps;
-    // When the gfx debugger is active, only run with the final mtx
-    if (GfxDebuggerIsDebugging()) {
-        start_time = next_original_frame;
-        step = 0;
-        count = 1;
-    }
-
-    RunCommands(commands, start_time, step, next_original_frame, count);
-
-    last_fps = fps;
-    last_update_rate = R_UPDATE_RATE;
 
     bool curAltAssets = CVarGetInteger(CVAR_SETTING("AltAssets"), 1);
     if (prevAltAssets != curAltAssets) {

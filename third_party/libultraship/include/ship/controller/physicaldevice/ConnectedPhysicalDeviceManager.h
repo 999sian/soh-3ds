@@ -30,7 +30,14 @@ class ConnectedPhysicalDeviceManager {
      * @param portIndex Zero-based controller port index.
      * @return Map of SDL joystick instance ID to SDL_GameController pointer.
      */
-    std::unordered_map<int32_t, SDL_GameController*> GetConnectedSDLGamepadsForPort(uint8_t portIndex);
+    /**
+     * @brief Gamepads visible to a port, excluding the ones it ignores.
+     *
+     * Returns a reference into a per-port cache that is dropped whenever a device connects or
+     * disconnects or a port's ignore list changes. Callers iterate it (or ask if it is empty)
+     * once per frame, so materialising a fresh map per call was pure allocation churn.
+     */
+    const std::unordered_map<int32_t, SDL_GameController*>& GetConnectedSDLGamepadsForPort(uint8_t portIndex);
 
     /**
      * @brief Returns the display names of all connected SDL gamepads.
@@ -84,6 +91,8 @@ class ConnectedPhysicalDeviceManager {
 
   private:
     std::unordered_map<int32_t, SDL_GameController*> mConnectedSDLGamepads;
+    /** @brief Per-port filtered view of mConnectedSDLGamepads; cleared on any device or ignore-list change. */
+    std::unordered_map<uint8_t, std::unordered_map<int32_t, SDL_GameController*>> mPortGamepadCache;
     std::unordered_map<int32_t, std::string> mConnectedSDLGamepadNames;
     std::unordered_map<uint8_t, std::unordered_set<int32_t>> mIgnoredInstanceIds;
 };

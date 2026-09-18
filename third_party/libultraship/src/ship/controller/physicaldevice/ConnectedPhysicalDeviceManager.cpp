@@ -8,10 +8,20 @@ ConnectedPhysicalDeviceManager::ConnectedPhysicalDeviceManager() {
 ConnectedPhysicalDeviceManager::~ConnectedPhysicalDeviceManager() {
 }
 
-std::unordered_map<int32_t, SDL_GameController*>
+const std::unordered_map<int32_t, SDL_GameController*>&
 ConnectedPhysicalDeviceManager::GetConnectedSDLGamepadsForPort(uint8_t portIndex) {
-    std::unordered_map<int32_t, SDL_GameController*> result;
+    // Every SDL mapping object called this once per frame and each call built a whole
+    // unordered_map - bucket array plus a node per gamepad - just to be iterated and thrown
+    // away. The answer only changes when a device connects or disconnects or a port's ignore
+    // list is edited, and all four of those paths live in this class, so memoise per port and
+    // drop the cache there. References into an unordered_map survive rehashing of the outer
+    // map, so a later lookup for another port cannot invalidate one already handed out.
+    const auto cached = mPortGamepadCache.find(portIndex);
+    if (cached != mPortGamepadCache.end()) {
+        return cached->second;
+    }
 
+    auto& result = mPortGamepadCache[portIndex];
     for (const auto& [instanceId, gamepad] : mConnectedSDLGamepads) {
         if (!PortIsIgnoringInstanceId(portIndex, instanceId)) {
             result[instanceId] = gamepad;
@@ -30,15 +40,21 @@ std::unordered_set<int32_t> ConnectedPhysicalDeviceManager::GetIgnoredInstanceId
 }
 
 bool ConnectedPhysicalDeviceManager::PortIsIgnoringInstanceId(uint8_t portIndex, int32_t instanceId) {
-    return GetIgnoredInstanceIdsForPort(portIndex).contains(instanceId);
+    // Do not use GetIgnoredInstanceIdsForPort here: it returns the set by value, so this would
+    // copy it per gamepad per call, and its operator[] would insert an empty set for every port
+    // ever queried.
+    const auto found = mIgnoredInstanceIds.find(portIndex);
+    return found != mIgnoredInstanceIds.end() && found->second.contains(instanceId);
 }
 
 void ConnectedPhysicalDeviceManager::IgnoreInstanceIdForPort(uint8_t portIndex, int32_t instanceId) {
     mIgnoredInstanceIds[portIndex].insert(instanceId);
+    mPortGamepadCache.clear();
 }
 
 void ConnectedPhysicalDeviceManager::UnignoreInstanceIdForPort(uint8_t portIndex, int32_t instanceId) {
     mIgnoredInstanceIds[portIndex].erase(instanceId);
+    mPortGamepadCache.clear();
 }
 
 void ConnectedPhysicalDeviceManager::HandlePhysicalDeviceConnect(int32_t sdlDeviceIndex) {
@@ -50,6 +66,7 @@ void ConnectedPhysicalDeviceManager::HandlePhysicalDeviceDisconnect(int32_t sdlJ
 }
 
 void ConnectedPhysicalDeviceManager::RefreshConnectedSDLGamepads() {
+    mPortGamepadCache.clear();
     mConnectedSDLGamepads.clear();
     mConnectedSDLGamepadNames.clear();
     static SDL_JoystickGUID sZeroGuid;

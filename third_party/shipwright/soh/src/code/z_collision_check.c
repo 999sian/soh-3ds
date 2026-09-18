@@ -1,3 +1,4 @@
+#include "fast/backends/game_profile_3ds.h"
 #include "global.h"
 #include "vt.h"
 #include "overlays/effects/ovl_Effect_Ss_HitMark/z_eff_ss_hitmark.h"
@@ -2639,6 +2640,7 @@ void CollisionCheck_AC(PlayState* play, CollisionCheckContext* colChkCtx, Collid
  * with the AC collider and the toucher and bumper elements that overlapped must share a dmgFlag.
  */
 void CollisionCheck_AT(PlayState* play, CollisionCheckContext* colChkCtx) {
+    SOH3DS_GAME_PROFILE_SCOPE(profile, SOH3DS_GAME_COLLISION);
     Collider** col;
 
     if (colChkCtx->colATCount == 0 || colChkCtx->colACCount == 0) {
@@ -2900,6 +2902,7 @@ static ColChkVsFunc sOCVsFuncs[4][4] = {
  * cannot collide with OC2_UNK2, nor can two colliders that share an actor.
  */
 void CollisionCheck_OC(PlayState* play, CollisionCheckContext* colChkCtx) {
+    SOH3DS_GAME_PROFILE_SCOPE(profile, SOH3DS_GAME_COLLISION);
     Collider** left;
     Collider** right;
     ColChkVsFunc vsFunc;
@@ -3086,6 +3089,7 @@ static ColChkApplyFunc sApplyDamageFuncs[4] = {
  * CollisionCheckInfo.
  */
 void CollisionCheck_Damage(PlayState* play, CollisionCheckContext* colChkCtx) {
+    SOH3DS_GAME_PROFILE_SCOPE(profile, SOH3DS_GAME_COLLISION);
     s32 i;
 
     for (i = 0; i < colChkCtx->colACCount; i++) {

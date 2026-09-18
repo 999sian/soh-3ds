@@ -3,6 +3,9 @@
 #include "soh/frame_interpolation.h"
 #include "soh/Enhancements/savestate_serialize.h"
 #include <assert.h>
+#ifdef __3DS__
+#include "compat3ds/arm11/kernels.h"
+#endif
 
 // clang-format off
 Mtx gMtxClear = {
@@ -72,10 +75,15 @@ void Matrix_Mult(MtxF* mf, u8 mode) {
 void Matrix_Translate(f32 x, f32 y, f32 z, u8 mode) {
     FrameInterpolation_RecordMatrixTranslate(x, y, z, mode);
     MtxF* cmf = sCurrentMatrix;
+#if !(defined(__3DS__) && defined(SOH3DS_ARM11_MATRIX_MULT))
     f32 tx;
     f32 ty;
+#endif
 
     if (mode == MTXMODE_APPLY) {
+#if defined(__3DS__) && defined(SOH3DS_ARM11_MATRIX_MULT)
+        Soh3dsMatrixTranslateApplyArm11(&cmf->xx, x, y, z);
+#else
         tx = cmf->xx;
         ty = cmf->xy;
         cmf->xw += tx * x + ty * y + cmf->xz * z;
@@ -88,6 +96,7 @@ void Matrix_Translate(f32 x, f32 y, f32 z, u8 mode) {
         tx = cmf->wx;
         ty = cmf->wy;
         cmf->ww += tx * x + ty * y + cmf->wz * z;
+#endif
     } else {
         SkinMatrix_SetTranslate(cmf, x, y, z);
     }
@@ -98,6 +107,9 @@ void Matrix_Scale(f32 x, f32 y, f32 z, u8 mode) {
     MtxF* cmf = sCurrentMatrix;
 
     if (mode == MTXMODE_APPLY) {
+#if defined(__3DS__) && defined(SOH3DS_ARM11_MATRIX_MULT)
+        Soh3dsMatrixScaleApplyArm11(&cmf->xx, x, y, z);
+#else
         cmf->xx *= x;
         cmf->yx *= x;
         cmf->zx *= x;
@@ -110,6 +122,7 @@ void Matrix_Scale(f32 x, f32 y, f32 z, u8 mode) {
         cmf->wx *= x;
         cmf->wy *= y;
         cmf->wz *= z;
+#endif
     } else {
         SkinMatrix_SetScale(cmf, x, y, z);
     }
@@ -130,6 +143,9 @@ void Matrix_RotateX(f32 x, u8 mode) {
             sin = sinf(x);
             cos = cosf(x);
 
+#if defined(__3DS__) && defined(SOH3DS_ARM11_MATRIX_MULT)
+            Soh3dsMatrixRotateXStageArm11(&cmf->xx, sin, cos);
+#else
             temp1 = cmf->xy;
             temp2 = cmf->xz;
             cmf->xy = temp1 * cos + temp2 * sin;
@@ -149,6 +165,7 @@ void Matrix_RotateX(f32 x, u8 mode) {
             temp2 = cmf->wz;
             cmf->wy = temp1 * cos + temp2 * sin;
             cmf->wz = temp2 * cos - temp1 * sin;
+#endif
         }
     } else {
         cmf = sCurrentMatrix;
@@ -195,6 +212,9 @@ void Matrix_RotateY(f32 y, u8 mode) {
             sin = sinf(y);
             cos = cosf(y);
 
+#if defined(__3DS__) && defined(SOH3DS_ARM11_MATRIX_MULT)
+            Soh3dsMatrixRotateYStageArm11(&cmf->xx, sin, cos);
+#else
             temp1 = cmf->xx;
             temp2 = cmf->xz;
             cmf->xx = temp1 * cos - temp2 * sin;
@@ -214,6 +234,7 @@ void Matrix_RotateY(f32 y, u8 mode) {
             temp2 = cmf->wz;
             cmf->wx = temp1 * cos - temp2 * sin;
             cmf->wz = temp1 * sin + temp2 * cos;
+#endif
         }
     } else {
         cmf = sCurrentMatrix;
@@ -260,6 +281,9 @@ void Matrix_RotateZ(f32 z, u8 mode) {
             sin = sinf(z);
             cos = cosf(z);
 
+#if defined(__3DS__) && defined(SOH3DS_ARM11_MATRIX_MULT)
+            Soh3dsMatrixRotateZStageArm11(&cmf->xx, sin, cos);
+#else
             temp1 = cmf->xx;
             temp2 = cmf->xy;
             cmf->xx = temp1 * cos + temp2 * sin;
@@ -279,6 +303,7 @@ void Matrix_RotateZ(f32 z, u8 mode) {
             temp2 = cmf->wy;
             cmf->wx = temp1 * cos + temp2 * sin;
             cmf->wy = temp2 * cos - temp1 * sin;
+#endif
         }
     } else {
         cmf = sCurrentMatrix;
@@ -328,6 +353,9 @@ void Matrix_RotateZYX(s16 x, s16 y, s16 z, u8 mode) {
         sin = Math_SinS(z);
         cos = Math_CosS(z);
 
+#if defined(__3DS__) && defined(SOH3DS_ARM11_MATRIX_MULT)
+        Soh3dsMatrixRotateZStageArm11(&cmf->xx, sin, cos);
+#else
         temp1 = cmf->xx;
         temp2 = cmf->xy;
         cmf->xx = temp1 * cos + temp2 * sin;
@@ -347,11 +375,15 @@ void Matrix_RotateZYX(s16 x, s16 y, s16 z, u8 mode) {
         temp2 = cmf->wy;
         cmf->wx = temp1 * cos + temp2 * sin;
         cmf->wy = temp2 * cos - temp1 * sin;
+#endif
 
         if (y != 0) {
             sin = Math_SinS(y);
             cos = Math_CosS(y);
 
+#if defined(__3DS__) && defined(SOH3DS_ARM11_MATRIX_MULT)
+            Soh3dsMatrixRotateYStageArm11(&cmf->xx, sin, cos);
+#else
             temp1 = cmf->xx;
             temp2 = cmf->xz;
             cmf->xx = temp1 * cos - temp2 * sin;
@@ -371,12 +403,16 @@ void Matrix_RotateZYX(s16 x, s16 y, s16 z, u8 mode) {
             temp2 = cmf->wz;
             cmf->wx = temp1 * cos - temp2 * sin;
             cmf->wz = temp1 * sin + temp2 * cos;
+#endif
         }
 
         if (x != 0) {
             sin = Math_SinS(x);
             cos = Math_CosS(x);
 
+#if defined(__3DS__) && defined(SOH3DS_ARM11_MATRIX_MULT)
+            Soh3dsMatrixRotateXStageArm11(&cmf->xx, sin, cos);
+#else
             temp1 = cmf->xy;
             temp2 = cmf->xz;
             cmf->xy = temp1 * cos + temp2 * sin;
@@ -396,6 +432,7 @@ void Matrix_RotateZYX(s16 x, s16 y, s16 z, u8 mode) {
             temp2 = cmf->wz;
             cmf->wy = temp1 * cos + temp2 * sin;
             cmf->wz = temp2 * cos - temp1 * sin;
+#endif
         }
     } else {
         SkinMatrix_SetRotateZYX(cmf, x, y, z);
@@ -412,8 +449,16 @@ void Matrix_TranslateRotateZYX(Vec3f* translation, Vec3s* rotation) {
     MtxF* cmf = sCurrentMatrix;
     f32 sin = Math_SinS(rotation->z);
     f32 cos = Math_CosS(rotation->z);
+    // temp1/temp2 are still used by the conditional Y and X stages below.
     f32 temp1;
     f32 temp2;
+
+#if defined(__3DS__) && defined(SOH3DS_ARM11_MATRIX_MULT)
+    // Only the always-executed translate + Z stage is in assembly; the Y and X
+    // rotations below stay in C because they are conditional.
+    Soh3dsMatrixTranslateRotateZArm11(&cmf->xx, translation->x, translation->y,
+                                      translation->z, sin, cos);
+#else
 
     temp1 = cmf->xx;
     temp2 = cmf->xy;
@@ -438,11 +483,15 @@ void Matrix_TranslateRotateZYX(Vec3f* translation, Vec3s* rotation) {
     cmf->ww += temp1 * translation->x + temp2 * translation->y + cmf->wz * translation->z;
     cmf->wx = temp1 * cos + temp2 * sin;
     cmf->wy = temp2 * cos - temp1 * sin;
+#endif
 
     if (rotation->y != 0) {
         sin = Math_SinS(rotation->y);
         cos = Math_CosS(rotation->y);
 
+#if defined(__3DS__) && defined(SOH3DS_ARM11_MATRIX_MULT)
+        Soh3dsMatrixRotateYStageArm11(&cmf->xx, sin, cos);
+#else
         temp1 = cmf->xx;
         temp2 = cmf->xz;
         cmf->xx = temp1 * cos - temp2 * sin;
@@ -462,12 +511,16 @@ void Matrix_TranslateRotateZYX(Vec3f* translation, Vec3s* rotation) {
         temp2 = cmf->wz;
         cmf->wx = temp1 * cos - temp2 * sin;
         cmf->wz = temp1 * sin + temp2 * cos;
+#endif
     }
 
     if (rotation->x != 0) {
         sin = Math_SinS(rotation->x);
         cos = Math_CosS(rotation->x);
 
+#if defined(__3DS__) && defined(SOH3DS_ARM11_MATRIX_MULT)
+        Soh3dsMatrixRotateXStageArm11(&cmf->xx, sin, cos);
+#else
         temp1 = cmf->xy;
         temp2 = cmf->xz;
         cmf->xy = temp1 * cos + temp2 * sin;
@@ -487,6 +540,7 @@ void Matrix_TranslateRotateZYX(Vec3f* translation, Vec3s* rotation) {
         temp2 = cmf->wz;
         cmf->wy = temp1 * cos + temp2 * sin;
         cmf->wz = temp2 * cos - temp1 * sin;
+#endif
     }
 }
 
@@ -561,7 +615,11 @@ Mtx* Matrix_MtxFToMtx(MtxF* src, Mtx* dest) {
 
 Mtx* Matrix_ToMtx(Mtx* dest, char* file, s32 line) {
     FrameInterpolation_RecordMatrixToMtx(dest, file, line);
+#ifdef __3DS__
+    guMtxF2L(sCurrentMatrix, dest);
+#else
     guMtxF2L(Matrix_CheckFloats(sCurrentMatrix, file, line), dest);
+#endif
     return dest;
     // return Matrix_MtxFToMtx(MATRIX_CHECKFLOATS(sCurrentMatrix), dest);
 }
@@ -575,13 +633,23 @@ Mtx* Matrix_MtxFToNewMtx(MtxF* src, GraphicsContext* gfxCtx) {
 }
 
 void Matrix_MultVec3f(Vec3f* src, Vec3f* dest) {
+#ifdef __3DS__
+    Matrix_MultVec3fExt(src, dest, sCurrentMatrix);
+#else
     MtxF* cmf = sCurrentMatrix;
 
     dest->x = cmf->xw + (cmf->xx * src->x + cmf->xy * src->y + cmf->xz * src->z);
     dest->y = cmf->yw + (cmf->yx * src->x + cmf->yy * src->y + cmf->yz * src->z);
     dest->z = cmf->zw + (cmf->zx * src->x + cmf->zy * src->y + cmf->zz * src->z);
+#endif
 }
 
+#ifdef __3DS__
+// The assembly entry handles disjoint/in-place copies. Retain the C sequence
+// for partial overlap and as the hardware benchmark's reference.
+_Static_assert(sizeof(MtxF) == 64, "ARM11 matrix copy requires sixteen floats");
+#define Matrix_MtxFCopy Soh3dsMatrixCopyReference
+#endif
 void Matrix_MtxFCopy(MtxF* dest, MtxF* src) {
     dest->xx = src->xx;
     dest->yx = src->yx;
@@ -616,16 +684,27 @@ void Matrix_MtxFCopy(MtxF* dest, MtxF* src) {
     dest->zw = src->zw;
     dest->ww = src->ww;
 }
+#ifdef __3DS__
+#undef Matrix_MtxFCopy
+#endif
 
 void Matrix_MtxToMtxF(Mtx* src, MtxF* dest) {
     guMtxL2F(dest, src);
 }
 
+#ifdef __3DS__
+_Static_assert(sizeof(Vec3f) == 12, "ARM11 vector layout");
+#define Matrix_MultVec3fExt Soh3dsMatrixVecReference
+#endif
 void Matrix_MultVec3fExt(Vec3f* src, Vec3f* dest, MtxF* mf) {
     dest->x = mf->xw + (mf->xx * src->x + mf->xy * src->y + mf->xz * src->z);
     dest->y = mf->yw + (mf->yx * src->x + mf->yy * src->y + mf->yz * src->z);
     dest->z = mf->zw + (mf->zx * src->x + mf->zy * src->y + mf->zz * src->z);
 }
+#ifdef __3DS__
+#undef Matrix_MultVec3fExt
+#endif
+
 
 void Matrix_Transpose(MtxF* mf) {
     f32 temp;

@@ -1,8 +1,14 @@
 #include <math.h>
 
 #include <libultraship/libultra/types.h>
+#ifdef __3DS__
+#include "compat3ds/arm11/kernels.h"
+#endif
 
 void guMtxF2L(float mf[4][4], Mtx* m) {
+#if defined(__3DS__) && !defined(SOH3DS_DISABLE_ARM11_ASM)
+    Soh3dsMtxF2LArm11(mf, &m->m[0][0]);
+#else
     unsigned int r, c;
     s32 tmp1;
     s32 tmp2;
@@ -16,6 +22,7 @@ void guMtxF2L(float mf[4][4], Mtx* m) {
             *m2++ = ((tmp1 << 0x10) & 0xffff0000) | (tmp2 & 0xffff);
         }
     }
+#endif
 }
 
 void guMtxL2F(float mf[4][4], Mtx* m) {

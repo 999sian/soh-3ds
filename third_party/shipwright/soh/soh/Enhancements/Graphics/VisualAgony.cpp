@@ -1,3 +1,4 @@
+#include "soh/frame_interpolation.h"
 #include "soh/Enhancements/game-interactor/GameInteractor.h"
 #include "soh/Enhancements/game-interactor/vanilla-behavior/GIVanillaBehavior.h"
 #include "soh/Enhancements/cosmetics/cosmeticsTypes.h"
@@ -14,8 +15,6 @@ extern PlayState* gPlayState;
 int16_t OTRGetRectDimensionFromLeftEdge(float v);
 float OTRGetDimensionFromLeftEdge(float v);
 float OTRGetDimensionFromRightEdge(float v);
-void FrameInterpolation_RecordOpenChild(const void* a, int b);
-void FrameInterpolation_RecordCloseChild(void);
 }
 
 #define CVAR_VISUAL_AGONY_NAME CVAR_ENHANCEMENT("VisualAgony")

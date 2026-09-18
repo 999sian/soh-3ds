@@ -184,12 +184,15 @@ void Archive::SetGameVersion(uint32_t gameVersion) {
     mGameVersion = gameVersion;
 }
 
-void Archive::IndexFile(const std::string& filePath) {
+void Archive::IndexFile(std::string filePath) {
     // Index every file under its literal name, including `.meta` sidecars. Keeping `foo`
     // (a real asset) and `foo.meta` (its alias sidecar) as distinct entries lets resolution
     // tell "has a real foo" from "has a foo.meta" — the previous suffix-stripping conflated
     // the two, which is the root of the alias-shadowing bug.
-    (*mHashes)[CRC64(filePath.c_str())] = filePath;
+    const auto hash = CRC64(filePath.c_str());
+    // Retain the filename allocation instead of copying it between long-lived
+    // index nodes and leaving tens of thousands of small holes in the heap.
+    (*mHashes)[hash] = std::move(filePath);
 }
 
 void Archive::ReserveIndex(size_t expectedFileCount) {
@@ -227,7 +230,8 @@ void Archive::Validate() {
 
     std::vector<std::tuple<std::string, std::shared_ptr<File>>> files;
 
-    for (const auto& [hash, filePath] : *mHashes) {
+    const auto indexedFiles = ListFiles();
+    for (const auto& [hash, filePath] : *indexedFiles) {
         std::string normalizedPath = filePath;
         std::replace(normalizedPath.begin(), normalizedPath.end(), '\\', '/');
 

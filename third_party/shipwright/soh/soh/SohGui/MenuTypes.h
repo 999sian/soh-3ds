@@ -1,6 +1,9 @@
 #pragma once
 
 #include <variant>
+#ifdef __3DS__
+#include <deque>
+#endif
 
 #include "UIWidgetOptions.hpp"
 
@@ -251,7 +254,14 @@ struct disabledInfo {
 // the sidebar, but still separate the window into 3 columns and display only in the first column
 struct SidebarEntry {
     uint32_t columnCount;
+#ifdef __3DS__
+    // The native settings menu is opened after gameplay has populated the
+    // heap. Small blocks avoid a large contiguous allocation and the old/new
+    // array overlap when a widget column grows; row addresses also stay valid.
+    std::vector<std::deque<WidgetInfo>> columnWidgets;
+#else
     std::vector<std::vector<WidgetInfo>> columnWidgets;
+#endif
 };
 
 // Contains entries for what's listed in the header at the top, including the name displayed on the top bar (label),

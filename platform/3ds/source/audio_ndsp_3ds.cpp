@@ -1,4 +1,5 @@
 #include "audio_ndsp_3ds.h"
+#include "system_3ds.h"
 
 #include <3ds.h>
 
@@ -202,11 +203,11 @@ extern "C" bool Mk64Audio3DSCommitStereoS16(uint32_t bufferToken, size_t frameCo
     }
 
     const size_t byteCount = frameCount * kChannels * sizeof(int16_t);
-    // DSP_FlushDataCache is disproportionately expensive when the application
-    // CPU limit is high. The kernel cache operation provides the coherency
-    // NDSP needs without burning a material part of an Old 3DS frame.
-    svcFlushProcessDataCache(CUR_PROCESS_HANDLE, reinterpret_cast<u32>(buffer.samples),
-                             static_cast<u32>(byteCount));
+    if (!Soh3dsCleanDataCache(buffer.samples, byteCount)) {
+        buffer.reserved = false;
+        sDroppedBuffers.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
     ResetWave(buffer, frameCount);
     buffer.reserved = false;
     ndspChnWaveBufAdd(kChannel, &buffer.wave);

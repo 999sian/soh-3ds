@@ -440,8 +440,10 @@ void AudioSeq_SeqLayerProcessScriptStep1(SequenceLayer* layer) {
 }
 
 s32 AudioSeq_SeqLayerProcessScriptStep5(SequenceLayer* layer, s32 sameSound) {
-    if (!layer->stopSomething && layer->sound != NULL && layer->sound->sample->codec == CODEC_S16_INMEMORY &&
-        layer->sound->sample->medium != MEDIUM_RAM) {
+    if (layer->sound != NULL &&
+        (layer->sound->sample == NULL ||
+         (!layer->stopSomething && layer->sound->sample->codec == CODEC_S16_INMEMORY &&
+          layer->sound->sample->medium != MEDIUM_RAM))) {
         layer->stopSomething = true;
         return -1;
     }
@@ -786,6 +788,13 @@ s32 AudioSeq_SeqLayerProcessScriptStep4(SequenceLayer* layer, s32 cmd) {
     }
 
     layer->delay2 = layer->delay;
+    // A selected sample can be unavailable after a failed resource load. Stop
+    // this note before automatic duration reads its loop; the caller decays any
+    // previous note. A null sound itself is a valid synthetic wave.
+    if (layer->sound != NULL && layer->sound->sample == NULL) {
+        layer->stopSomething = true;
+        return -1;
+    }
     layer->freqScale *= layer->unk_34;
     if (layer->delay == 0) {
         if (layer->sound != NULL) {

@@ -1,3 +1,4 @@
+#include "fast/backends/game_profile_3ds.h"
 #ifdef WIN32
 #include <vcruntime_string.h>
 #endif
@@ -237,6 +238,7 @@ s32 swapAndConvertJPEG(void* data) {
         size_t size = 320 * 240 * 2;
 
         char* decodedJpeg = ResourceMgr_LoadJPEG(data, size);
+        if (decodedJpeg == NULL) return -1;
 
         osSyncPrintf("Expanding jpeg data\n");
         osSyncPrintf("Work buffer address (Z buffer) %08x\n", gZBuffer);
@@ -244,6 +246,7 @@ s32 swapAndConvertJPEG(void* data) {
         time = osGetTime();
 
         memcpy(data, decodedJpeg, size);
+        free(decodedJpeg);
         time = osGetTime() - time;
 
         osSyncPrintf("Success... I think. time = %6.3f ms", OS_CYCLES_TO_USEC(time) / 1000.0f);
@@ -291,7 +294,7 @@ void Room_DrawBackground2D(Gfx** gfxP, void* tex, void* tlut, u16 width, u16 hei
         // path-string imagePtr; the draw shows garbage for a frame instead of
         // reading address 0xB.
         if (blob != NULL) {
-            swapAndConvertJPEG(blob);
+            if (swapAndConvertJPEG(blob) < 0) return;
             bg->b.imagePtr = (uintptr_t)blob;
         } else {
             osSyncPrintf("room: null background %s\n", (char*)tex);
@@ -589,6 +592,7 @@ u32 func_80096FE8(PlayState* play, RoomContext* roomCtx) {
 }
 
 s32 Room_RequestNewRoom(PlayState* play, RoomContext* roomCtx, s32 roomNum) {
+    SOH3DS_GAME_PROFILE_SCOPE(profile, SOH3DS_GAME_ROOM);
     size_t size;
 
     return OTRRoom_RequestNewRoom(play, roomCtx, roomNum);
@@ -617,6 +621,7 @@ s32 Room_RequestNewRoom(PlayState* play, RoomContext* roomCtx, s32 roomNum) {
 }
 
 s32 func_800973FC(PlayState* play, RoomContext* roomCtx) {
+    SOH3DS_GAME_PROFILE_SCOPE(profile, SOH3DS_GAME_ROOM);
     return OTRfunc_800973FC(play, roomCtx);
 
     if (roomCtx->status == 1) {

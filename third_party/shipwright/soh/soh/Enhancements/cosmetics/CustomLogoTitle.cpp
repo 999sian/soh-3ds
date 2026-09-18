@@ -17,6 +17,9 @@ extern "C" {
 extern "C" {
 extern void Title_Calc(TitleContext*);
 extern void Title_SetupView(TitleContext*, f32, f32, f32);
+#ifdef __3DS__
+bool Soh3dsUsesOldProfile(void);
+#endif
 }
 
 #define LOGO_TO_DRAW_LUS 0
@@ -25,6 +28,11 @@ extern void Title_SetupView(TitleContext*, f32, f32, f32);
 static bool shouldDrawIceOnSpinningLogo = false;
 
 extern "C" void CustomLogoTitle_Draw(TitleContext* titleContext, uint8_t logoToDraw) {
+#ifdef __3DS__
+    // The HD ship wordmark alone retains 6 MiB. Use the original small logo
+    // on the Old profile, including when a New profile config was copied over.
+    if (Soh3dsUsesOldProfile()) logoToDraw = LOGO_TO_DRAW_N64;
+#endif
     static s16 sTitleRotY = 0;
     static Lights1 sTitleLights = gdSPDefLights1(0x64, 0x64, 0x64, 0xFF, 0xFF, 0xFF, 0x45, 0x45, 0x45);
 
@@ -124,9 +132,13 @@ extern "C" void CustomLogoTitle_Draw(TitleContext* titleContext, uint8_t logoToD
 
 extern "C" void CustomLogoTitle_Main(TitleContext* titleContext) {
     static uint8_t logosSeen = 0;
+    int bootSequence = CVAR_BOOTSEQUENCE_VALUE;
+#ifdef __3DS__
+    if (Soh3dsUsesOldProfile()) bootSequence = BOOTSEQUENCE_AUTHENTIC;
+#endif
     uint8_t logoToDraw = LOGO_TO_DRAW_N64;
 
-    if (CVAR_BOOTSEQUENCE_VALUE == BOOTSEQUENCE_DEFAULT) {
+    if (bootSequence == BOOTSEQUENCE_DEFAULT) {
         if (logosSeen == 0) {
             logoToDraw = LOGO_TO_DRAW_LUS;
         } else {
@@ -134,7 +146,7 @@ extern "C" void CustomLogoTitle_Main(TitleContext* titleContext) {
         }
     }
 
-    if (CVAR_BOOTSEQUENCE_VALUE == BOOTSEQUENCE_AUTHENTIC) {
+    if (bootSequence == BOOTSEQUENCE_AUTHENTIC) {
         logoToDraw = LOGO_TO_DRAW_N64;
     }
 
@@ -154,12 +166,12 @@ extern "C" void CustomLogoTitle_Main(TitleContext* titleContext) {
 
         logosSeen++;
 
-        if (CVAR_BOOTSEQUENCE_VALUE == BOOTSEQUENCE_DEFAULT && logosSeen == 1) {
+        if (bootSequence == BOOTSEQUENCE_DEFAULT && logosSeen == 1) {
             SET_NEXT_GAMESTATE(&titleContext->state, Title_Init, TitleContext);
         }
 
-        if ((CVAR_BOOTSEQUENCE_VALUE == BOOTSEQUENCE_DEFAULT && logosSeen == 2) ||
-            (CVAR_BOOTSEQUENCE_VALUE == BOOTSEQUENCE_AUTHENTIC)) {
+        if ((bootSequence == BOOTSEQUENCE_DEFAULT && logosSeen == 2) ||
+            (bootSequence == BOOTSEQUENCE_AUTHENTIC)) {
             SET_NEXT_GAMESTATE(&titleContext->state, Opening_Init, OpeningContext);
             logosSeen = 0;
         }
