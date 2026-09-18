@@ -25,6 +25,7 @@
 #include "QuickItemsPolicy3DS.h"
 
 int Soh3dsTouchRead(int* x, int* y) __attribute__((weak));
+int Soh3dsUsesOldProfile(void) __attribute__((weak));
 
 #define TAB_H 22
 #define TAB_W 64
@@ -81,7 +82,7 @@ static const char* Bs_PageName(int page) {
 
 static int Bs_RowCount(int page) {
     if (sUi.tab == SOH3DS_TAB_TRACKER) return Soh3dsTracker_RowCount(page);
-    return page == 0 ? 3 : page == 1 ? Soh3dsControls_RowCount() : Soh3dsSettings_RowCount(page - 2);
+    return page == 0 ? 5 : page == 1 ? Soh3dsControls_RowCount() : Soh3dsSettings_RowCount(page - 2);
 }
 
 static int Bs_GetRow(int page, int row, Soh3dsSettingsRow* out) {
@@ -113,6 +114,35 @@ static int Bs_GetRow(int page, int row, Soh3dsSettingsRow* out) {
             snprintf(value, sizeof(value), "%.1fx", CVarGetFloat(CVAR_ENHANCEMENT("DualScreen.MinimapScale"), 2.0f));
             out->value = value;
             return 1;
+        case 3:
+            out->kind = SOH3DS_ROW_HEADING;
+            out->label = "Performance";
+            out->tooltip = "";
+            return 1;
+        case 4: {
+            out->kind = SOH3DS_ROW_CHOICE;
+            out->label = "Target FPS";
+            if (Soh3dsUsesOldProfile != NULL && Soh3dsUsesOldProfile()) {
+                out->disabled = 1;
+                out->value = "20 FPS";
+                out->tooltip = "Old 3DS hardware is locked to 20 FPS native framerate.";
+            } else {
+                out->disabled = 0;
+                out->tooltip = "Framerate target (20 FPS original, 30 FPS, or 60 FPS interpolated).";
+                int fps = CVarGetInteger(CVAR_SETTING("InterpolationFPS"), 30);
+                if (CVarGetInteger(CVAR_SETTING("MatchRefreshRate"), 0) != 0) {
+                    fps = 60;
+                }
+                if (fps <= 20) {
+                    out->value = "20 FPS";
+                } else if (fps <= 30) {
+                    out->value = "30 FPS";
+                } else {
+                    out->value = "60 FPS";
+                }
+            }
+            return 1;
+        }
         default:
             return 0;
     }
@@ -130,6 +160,26 @@ static void Bs_AdjustRow(int page, int row, int dir) {
     } else if (row == 2) {
         float scale = CVarGetFloat(CVAR_ENHANCEMENT("DualScreen.MinimapScale"), 2.0f) + 0.5f * dir;
         CVarSetFloat(CVAR_ENHANCEMENT("DualScreen.MinimapScale"), scale < 1.0f ? 2.0f : scale > 2.0f ? 1.0f : scale);
+    } else if (row == 4) {
+        if (Soh3dsUsesOldProfile != NULL && Soh3dsUsesOldProfile()) {
+            return;
+        }
+        int fps = CVarGetInteger(CVAR_SETTING("InterpolationFPS"), 30);
+        if (CVarGetInteger(CVAR_SETTING("MatchRefreshRate"), 0) != 0) {
+            fps = 60;
+        }
+        int idx = (fps <= 20) ? 0 : (fps <= 30) ? 1 : 2;
+        idx = (idx + dir + 3) % 3;
+        if (idx == 0) {
+            CVarSetInteger(CVAR_SETTING("InterpolationFPS"), 20);
+            CVarSetInteger(CVAR_SETTING("MatchRefreshRate"), 0);
+        } else if (idx == 1) {
+            CVarSetInteger(CVAR_SETTING("InterpolationFPS"), 30);
+            CVarSetInteger(CVAR_SETTING("MatchRefreshRate"), 0);
+        } else {
+            CVarSetInteger(CVAR_SETTING("InterpolationFPS"), 60);
+            CVarSetInteger(CVAR_SETTING("MatchRefreshRate"), 1);
+        }
     } else {
         return;
     }
