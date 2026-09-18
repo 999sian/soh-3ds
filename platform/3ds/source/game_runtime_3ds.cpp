@@ -31,6 +31,7 @@ extern "C" void Mk64FrameInterpolation3DSSetEnabled(bool enabled);
 extern "C" bool Mk64FrameInterpolation3DSIsEnabled(void);
 extern "C" bool Mk64FrameInterpolation3DSPrepare(float step);
 extern "C" void Mk64FrameInterpolation3DSClearPrepared(void);
+extern "C" int Soh3dsTargetFps(void) __attribute__((weak));
 
 namespace {
 std::unique_ptr<Fast::GfxWindowBackend3DS> sWindow;
@@ -79,6 +80,7 @@ constexpr uint32_t kAudioRecoveryFrames = kAudioFramesPerGameTick * 3 / 2;
 // scheduler jitter as overload, so its 60 Hz midpoint path never accumulated
 // enough healthy samples to turn on. Leave a real margin for missed frames.
 constexpr uint64_t kSlowTickMilliseconds = 42;
+constexpr float k60FpsFrameBudgetMilliseconds = 16.7f;
 constexpr float kBusyProcessingMilliseconds = 16.0f;
 constexpr float kBusyDrawingMilliseconds = 16.0f;
 constexpr float kBusyCommandBufferUsage = 0.85f;
@@ -141,10 +143,12 @@ bool ShouldRenderIntermediatePresentation(uint64_t presentationStart) {
     sLastObservedTextureUploadCount = textureUploadCount;
     sLastObservedTextureUploadBytes = textureUploadBytes;
 
+    const bool is60HzTarget = Soh3dsTargetFps != nullptr && Soh3dsTargetFps() == 60;
+    const uint64_t startIntervalThreshold = is60HzTarget ? 17U : kSlowTickMilliseconds;
     const bool slowStartInterval = sLastPresentationStart != 0 &&
-                                   presentationStart - sLastPresentationStart > kSlowTickMilliseconds;
-    const bool previousTickSlow = slowStartInterval ||
-                                  sPreviousPresentationDuration > kSlowTickMilliseconds;
+                                   presentationStart - sLastPresentationStart > startIntervalThreshold;
+    const bool slowPresentation = static_cast<float>(sPreviousPresentationDuration) > k60FpsFrameBudgetMilliseconds;
+    const bool previousTickSlow = slowStartInterval || slowPresentation;
     sLastPresentationStart = presentationStart;
 
     const float processingMilliseconds = C3D_GetProcessingTime();
@@ -152,6 +156,23 @@ bool ShouldRenderIntermediatePresentation(uint64_t presentationStart) {
     const bool citro3DBusy = processingMilliseconds > kBusyProcessingMilliseconds ||
                              drawingMilliseconds > kBusyDrawingMilliseconds ||
                              C3D_GetCmdBufUsage() > kBusyCommandBufferUsage;
+
+    // When 60 FPS presentation is active: if a previous tick was slow (> 16.7 ms)
+    // or Citro3D is busy, return false immediately so that the intermediate frame
+    // is skipped, granting the mandatory key frame the full budget.
+    if (previousTickSlow || citro3DBusy) {
+        mk64_3ds::AdaptivePresentationInputs inputs = {};
+        inputs.hasPriorTopFrame = sHasPresentedTopFrame;
+        inputs.audioBufferedFrames = Mk64Audio3DSBufferedFrames();
+        inputs.audioLowWaterFrames = kAudioLowWaterFrames;
+        inputs.audioRecoveryFrames = kAudioRecoveryFrames;
+        inputs.keyframeHeadroom = false;
+        inputs.previousTickSlow = previousTickSlow;
+        inputs.citro3DBusy = citro3DBusy;
+        mk64_3ds::UpdateAdaptivePresentation(&sAdaptivePresentation, inputs);
+        return false;
+    }
+
     const bool textureUploadBurst = mk64_3ds::IsAdaptivePresentationTextureBurst(
         textureUploadDelta, textureUploadByteDelta);
     // Animated kart frames and menu assets enter the O2R resource index a few
@@ -168,18 +189,16 @@ bool ShouldRenderIntermediatePresentation(uint64_t presentationStart) {
     inputs.audioBufferedFrames = Mk64Audio3DSBufferedFrames();
     inputs.audioLowWaterFrames = kAudioLowWaterFrames;
     inputs.audioRecoveryFrames = kAudioRecoveryFrames;
-    // Overall presentation duration includes SYNCDRAW's VBlank wait and cannot
-    // be compared with a 16.7 ms CPU budget. Citro3D's processing/drawing
-    // timers above exclude that wait. Allow a bounded midpoint probe whenever
-    // the mandatory keyframe still fits its 30 Hz interval; the adaptive state
+    // Allow a bounded midpoint probe whenever the mandatory keyframe still
+    // fits its 60 Hz budget (<= 16.7 ms) without GPU pressure; the adaptive state
     // immediately backs out if the extra image misses the next interval.
     inputs.keyframeHeadroom = sPreviousPresentationDuration != 0 &&
-                              sPreviousPresentationDuration <= kSlowTickMilliseconds &&
+                              static_cast<float>(sPreviousPresentationDuration) <= k60FpsFrameBudgetMilliseconds &&
                               !citro3DBusy;
-    inputs.previousTickSlow = previousTickSlow;
+    inputs.previousTickSlow = false;
     inputs.resourceActivity = resourceBurst;
     inputs.textureUploadActivity = textureUploadBurst;
-    inputs.citro3DBusy = citro3DBusy;
+    inputs.citro3DBusy = false;
     return mk64_3ds::UpdateAdaptivePresentation(&sAdaptivePresentation, inputs).renderMidpoint;
 }
 

@@ -1,4 +1,5 @@
 #include "settings_3ds.h"
+#include "render_policy_3ds.hpp"
 
 #include <cerrno>
 #include <cstddef>
@@ -115,13 +116,7 @@ uint16_t SanitizeResolution(long width) {
 }
 
 uint8_t SanitizeRenderScale(long percent) {
-    if (percent <= 62) {
-        return 50;
-    }
-    if (percent <= 87) {
-        return 75;
-    }
-    return 100;
+    return mk64_3ds::NormalizeRenderScale(percent);
 }
 
 Mk64DisplayFilter3DS SanitizeDisplayFilter(Mk64DisplayFilter3DS filter) {

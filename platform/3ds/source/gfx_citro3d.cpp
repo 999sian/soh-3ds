@@ -7,6 +7,7 @@
 #include "fast/backends/gfx_profile_3ds.h"
 #include "fast/backends/game_profile_3ds.h"
 #include "gpu_command_budget_3ds.hpp"
+#include "render_policy_3ds.hpp"
 
 #include <3ds.h>
 #include <citro3d.h>
@@ -58,6 +59,7 @@ extern "C" uint32_t Soh3dsGameTicks(void) __attribute__((weak));
 // Per-tick phase ticks accumulated by graph.c (StartFrame, PadMgr, Update).
 extern "C" uint64_t gSoh3dsTickPhaseTicks[3];
 uint64_t gSoh3dsTickPhaseTicks[3] = { 0, 0, 0 };
+extern "C" float gSoh3dsRenderDistanceEnd = 0.0f;
 // Detailed probes require perfprofile.flag as well as perftrace.flag.
 // Basic capture leaves these hot-path counters and clock reads disabled.
 // Detail mode samples hot calls at 1/16 or 1/64, coarse phases every call.
@@ -172,7 +174,7 @@ extern "C" bool Soh3dsFrameBehind(void) {
 }
 extern "C" void Soh3dsFrameDropped(void) {
     ++sFramesDropped;
-    sPaceVblank += sPacePeriod;
+    sPaceVblank += sPacePeriod != 0 ? sPacePeriod : 1u;
 }
 extern "C" void Soh3dsSleepInit() __attribute__((weak));
 extern "C" void Soh3dsSleepShutdown() __attribute__((weak));
@@ -2560,9 +2562,7 @@ void GfxRenderingAPICitro3D::StartFrame() {
     const uint8_t requestedScale = Mk64Settings3DSGetRenderScalePercent != nullptr
                                        ? Mk64Settings3DSGetRenderScalePercent()
                                        : 100;
-    mImpl->renderScalePercent = requestedScale == 50 || requestedScale == 75
-                                    ? requestedScale
-                                    : 100;
+    mImpl->renderScalePercent = mk64_3ds::NormalizeRenderScale(requestedScale);
     const int requestedFilter = Mk64Settings3DSGetDisplayFilter != nullptr
                                     ? Mk64Settings3DSGetDisplayFilter()
                                     : DisplayFilterBilinear;
@@ -2717,8 +2717,9 @@ void GfxRenderingAPICitro3D::EndFrame() {
         const uint32_t period = target > 0 && target < 60 ? 60u / target : 1u;
         const uint32_t now = C3D_FrameCounter(0);
         if (sPaceVblank == 0 || static_cast<int32_t>(now - (sPaceVblank + kMaxPacingDebtVblanks)) > 0 ||
+            static_cast<int32_t>(sPaceVblank - (now + period + 1)) > 0 ||
             sPacePeriod != period) {
-            sPaceVblank = now + 1; // first frame, stall, or rate change
+            sPaceVblank = now + 1; // first frame, stall, rate change, or forward desync
         }
         sPacePeriod = period;
         const uint64_t waitStart = svcGetSystemTick();

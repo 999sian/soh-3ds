@@ -1,6 +1,8 @@
 #define NOMINMAX
-#ifdef __3DS__
+#if defined(__3DS__) || defined(_3DS)
 #include "fast/texture_rows_3ds.h"
+#include "render_policy_3ds.hpp"
+extern "C" __attribute__((weak)) float gSoh3dsRenderDistanceEnd = 0.0f;
 #endif
 
 #include <math.h>
@@ -2790,6 +2792,20 @@ bool Interpreter::TryEmitTriangleCompact(struct LoadedVertex* const v_arr[3], bo
 void Interpreter::EmitTriangle(struct LoadedVertex* const v_arr[3], bool is_rect) {
     // Includes a capacity-triggered Flush and its nested backend work.
     Soh3dsProfileScope profile(Soh3dsProfileSection::TriangleEmit);
+#if defined(__3DS__) || defined(_3DS)
+    {
+        struct LoadedVertex* v1 = v_arr[0];
+        struct LoadedVertex* v2 = v_arr[1];
+        struct LoadedVertex* v3 = v_arr[2];
+        const bool depthTest = ((mRenderingState.depth_test_and_mask & 1) != 0) ||
+                               ((mRdp->other_mode_l & 0x00000C00) != 0);
+        if (::gSoh3dsRenderDistanceEnd > 0.0f &&
+            mk64_3ds::CullDistantTriangle(v1->w, v2->w, v3->w, ::gSoh3dsRenderDistanceEnd, false,
+                                          depthTest)) {
+            return;
+        }
+    }
+#endif
 #if defined(SOH3DS_COMPACT_VERTEX_STREAM) && SOH3DS_COMPACT_VERTEX_STREAM
     if (TryEmitTriangleCompact(v_arr, is_rect)) {
         Soh3dsProfileVertexBatch(Soh3dsVertexPath::Compact, 1);
